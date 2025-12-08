@@ -8,7 +8,7 @@
 
 ## Why PyCausalSim?
 
-Traditional analytics tell you **what** happened. PyCausalSim tells you **why** it happened and **what would happen if** you changed something.
+Traditional analytics tell you *what* happened. PyCausalSim tells you *why* it happened and *what would happen if* you changed something.
 
 ```python
 from pycausalsim import CausalSimulator
@@ -31,21 +31,19 @@ drivers = simulator.rank_drivers()
 
 ## Key Features
 
-### 1. **Simulation-Based Causal Discovery**
-Unlike regression or ML, PyCausalSim uses counterfactual simulation to test causal hypotheses:
+### 1. Simulation-Based Causal Discovery
 - Generate synthetic "what-if" scenarios
 - Test interventions before deploying them
 - Understand non-linear and interaction effects
 
-### 2. **Multiple Discovery Methods**
+### 2. Multiple Discovery Methods
 - **Constraint-based**: PC, FCI algorithms
-- **Score-based**: GES, FGES algorithms  
-- **Functional**: LiNGAM, ANM
-- **Neural**: NOTEARS, DAG-GNN (deep learning-based)
+- **Score-based**: GES, FGES algorithms
+- **Functional**: LiNGAM for non-Gaussian data
+- **Neural**: NOTEARS (deep learning-based)
 - **Hybrid**: Combine methods for robustness
 
-### 3. **Structural Causal Models (SCM)**
-Build explicit causal models that capture how your system works:
+### 3. Structural Causal Models (SCM)
 ```python
 from pycausalsim.models import StructuralCausalModel
 
@@ -59,34 +57,42 @@ counterfactuals = scm.counterfactual(
 )
 ```
 
-### 4. **Uplift Modeling**
-Identify WHO will respond to treatments:
+### 4. Marketing Attribution
+```python
+from pycausalsim import MarketingAttribution
+
+attr = MarketingAttribution(data, conversion_col='converted')
+attr.fit(method='shapley')  # Causal Shapley values
+
+weights = attr.get_attribution()
+# {'email': 0.25, 'display': 0.15, 'search': 0.35, 'social': 0.20, 'direct': 0.05}
+
+optimal_budget = attr.optimize_budget(total_budget=100000)
+```
+
+### 5. A/B Test Analysis
+```python
+from pycausalsim import ExperimentAnalysis
+
+exp = ExperimentAnalysis(data, treatment='new_feature', outcome='engagement')
+effect = exp.estimate_effect(method='dr')  # Doubly robust estimator
+
+# Check for heterogeneous effects
+het = exp.analyze_heterogeneity(covariates=['user_tenure', 'activity_level'])
+```
+
+### 6. Uplift Modeling
 ```python
 from pycausalsim.uplift import UpliftModeler
 
 uplift = UpliftModeler(data, treatment='campaign', outcome='conversion')
 uplift.fit()
 
-# Segment users by predicted treatment effect
+# Segment users: persuadables, sure_things, lost_causes, sleeping_dogs
 segments = uplift.segment_by_effect()
-# Returns: persuadables, sure_things, lost_causes, sleeping_dogs
 ```
 
-### 5. **Agent-Based Simulation**
-Model complex systems with interacting agents:
-```python
-from pycausalsim.agents import AgentBasedSimulator
-
-# Simulate 10,000 users with network effects
-abs_sim = AgentBasedSimulator(n_agents=10000, causal_model=scm)
-results = abs_sim.simulate(steps=100)
-
-# Analyze emergent behavior
-network_effects = abs_sim.analyze_contagion()
-```
-
-### 6. **Built-in Validation**
-Every causal claim is automatically validated:
+### 7. Built-in Validation
 ```python
 # Sensitivity analysis
 sensitivity = simulator.validate()
@@ -98,10 +104,11 @@ sensitivity.refute()  # Multiple refutation methods
 ## Installation
 
 ```bash
-pip install pycausalsim
+pip install git+https://github.com/Bodhi8/pycausalsim.git
 ```
 
-For development installation:
+Or clone and install locally:
+
 ```bash
 git clone https://github.com/Bodhi8/pycausalsim.git
 cd pycausalsim
@@ -109,8 +116,6 @@ pip install -e ".[dev]"
 ```
 
 ## Quick Start
-
-### Basic Example: E-commerce Conversion
 
 ```python
 import pandas as pd
@@ -128,7 +133,7 @@ simulator = CausalSimulator(
 )
 
 # Step 1: Discover causal structure
-simulator.discover_graph(method='notears')
+simulator.discover_graph(method='ges')
 simulator.plot_graph()  # Visualize learned causal relationships
 
 # Step 2: Simulate interventions
@@ -137,13 +142,7 @@ load_time_effect = simulator.simulate_intervention(
     value=2.0,  # seconds
     n_simulations=1000
 )
-
 print(load_time_effect.summary())
-# Output:
-# Intervention: page_load_time = 2.0
-# Current value: 3.5
-# Effect on conversion_rate: +2.3% (95% CI: [1.8%, 2.8%])
-# P-value: 0.001
 
 # Step 3: Rank all causal drivers
 drivers = simulator.rank_drivers()
@@ -157,82 +156,18 @@ optimal = simulator.optimize_policy(
 )
 ```
 
-### Marketing Attribution
-
-```python
-from pycausalsim import MarketingAttribution
-
-# Multi-touch attribution with causal inference
-attr = MarketingAttribution(
-    data=touchpoint_data,
-    conversion_col='converted',
-    touchpoint_cols=['email', 'display', 'search', 'social', 'direct']
-)
-
-# Learn true causal contribution (not just last-touch)
-attr.fit(method='shapley')
-
-# Get attribution weights
-weights = attr.get_attribution()
-# {'email': 0.25, 'display': 0.15, 'search': 0.35, 'social': 0.20, 'direct': 0.05}
-
-# Optimize budget allocation
-optimal_budget = attr.optimize_budget(total_budget=100000)
-```
-
-### A/B Test Analysis
-
-```python
-from pycausalsim import ExperimentAnalysis
-
-# Analyze A/B test with causal lens
-exp = ExperimentAnalysis(
-    data=ab_test_data,
-    treatment='new_feature',
-    outcome='engagement'
-)
-
-# Get causal effect (with heterogeneity)
-effect = exp.estimate_effect(method='dr')  # Doubly robust estimator
-
-# Check for heterogeneous effects
-het = exp.analyze_heterogeneity(covariates=['user_tenure', 'activity_level'])
-het.plot()
-
-# Simulate long-term impact
-longterm = exp.simulate_longterm(periods=90)
-```
-
 ## Use Cases
 
-### 1. **Conversion Rate Optimization**
-- Identify true drivers of conversion (vs. correlated factors)
-- Simulate impact of UX changes before deploying
-- Optimize page elements (load time, design, pricing)
-
-### 2. **Marketing Attribution**
-- Move beyond last-touch attribution
-- Understand true incremental value of each channel
-- Optimize budget allocation causally
-
-### 3. **Product Feature Impact**
-- Understand which features actually drive engagement
-- Simulate long-term effects of feature changes
-- Identify user segments with heterogeneous responses
-
-### 4. **Pricing Optimization**
-- Understand causal price elasticity (not just correlation)
-- Account for selection bias and confounding
-- Simulate dynamic pricing strategies
-
-### 5. **Retention Analysis**
-- Identify causal drivers of churn
-- Simulate intervention effectiveness
-- Target users most likely to respond to retention efforts
+1. **Conversion Rate Optimization**: Identify true drivers of conversion vs. correlated factors
+2. **Marketing Attribution**: Move beyond last-touch to understand true incremental value
+3. **Product Feature Impact**: Understand which features actually drive engagement
+4. **Pricing Optimization**: Understand causal price elasticity (not just correlation)
+5. **Retention Analysis**: Identify causal drivers of churn
 
 ## Why Simulation for Causality?
 
 ### The Problem with Correlation
+
 ```python
 # Traditional approach - WRONG!
 from sklearn.ensemble import RandomForestRegressor
@@ -246,7 +181,8 @@ feature_importance = rf.feature_importances_
 # Fails with confounding, selection bias, reverse causation
 ```
 
-### The PyCausalSim Approach - RIGHT!
+### The PyCausalSim Approach
+
 ```python
 from pycausalsim import CausalSimulator
 
@@ -261,67 +197,45 @@ sim.discover_graph()  # Learn causal structure
 drivers = sim.rank_drivers()  # TRUE causal importance
 ```
 
-## Visualization
+## Project Structure
 
-PyCausalSim includes rich visualization tools:
-
-```python
-# Causal graph
-simulator.plot_graph()
-
-# Effect sizes
-simulator.plot_effects()
-
-# Counterfactual vs. factual
-result.plot_counterfactual()
-
-# Sensitivity analysis
-sensitivity.plot_bounds()
-
-# Heterogeneity
-uplift.plot_segments()
+```
+pycausalsim/
+├── pycausalsim/
+│   ├── __init__.py         # Package exports
+│   ├── simulator.py        # Main CausalSimulator class
+│   ├── attribution.py      # Marketing Attribution
+│   ├── experiment.py       # A/B Test Analysis
+│   ├── results.py          # Result classes
+│   ├── models/             # Structural Causal Models
+│   ├── discovery/          # Causal discovery algorithms
+│   ├── uplift/             # Uplift modeling
+│   ├── agents/             # Agent-based simulation
+│   ├── validation/         # Sensitivity analysis
+│   ├── adapters/           # DoWhy/EconML integration
+│   ├── utils/              # Utilities
+│   └── visualization/      # Plotting
+├── tests/                  # Test suite
+├── examples/               # Example scripts
+├── pyproject.toml          # Package configuration
+└── README.md
 ```
 
-## Integrations
+## Dependencies
 
-PyCausalSim integrates with the broader causal inference ecosystem:
+**Core:**
+- numpy >= 1.20.0
+- pandas >= 1.3.0
+- scipy >= 1.7.0
+- scikit-learn >= 1.0.0
 
-### DoWhy Integration
-```python
-from dowhy import CausalModel
-from pycausalsim.adapters import from_dowhy
-
-dowhy_model = CausalModel(...)
-simulator = from_dowhy(dowhy_model)
-```
-
-### EconML Integration
-```python
-simulator = CausalSimulator(data)
-econml_model = simulator.to_econml()
-```
-
-### Papilon Integration
-```python
-from papilon import ComplexSystem
-from pycausalsim.adapters import from_papilon
-
-papilon_results = ComplexSystem().run()
-causal_analysis = from_papilon(papilon_results)
-```
-
-## Documentation
-
-- **[Full Documentation](https://pycausalsim.readthedocs.io)** (Coming soon)
-- **[API Reference](https://pycausalsim.readthedocs.io/api)** (Coming soon)
-- **[Examples](./examples)**: Jupyter notebooks with detailed walkthroughs
-- **[Architecture](./ARCHITECTURE.md)**: Technical design document
+**Optional:**
+- matplotlib, networkx, seaborn (visualization)
+- dowhy, econml (integrations)
 
 ## Contributing
 
-We welcome contributions! See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
-
-### Development Setup
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ```bash
 git clone https://github.com/Bodhi8/pycausalsim.git
@@ -332,68 +246,33 @@ pytest tests/
 
 ## License
 
-MIT License - see [LICENSE](./LICENSE) for details.
+MIT License - see [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 
-PyCausalSim builds on the excellent work of:
-- [DoWhy](https://github.com/py-why/dowhy) - Microsoft's causal inference library
-- [EconML](https://github.com/microsoft/EconML) - Heterogeneous treatment effects
-- [CausalML](https://github.com/uber/causalml) - Uber's uplift modeling library
-- [Papilon](https://github.com/Bodhi8/papilon) - Complex systems framework
-
-Inspired by research including:
+PyCausalSim builds on research from:
 - Pearl, J. (2009). *Causality: Models, Reasoning and Inference*
 - Peters, J., Janzing, D., & Schölkopf, B. (2017). *Elements of Causal Inference*
 - Imbens, G. W., & Rubin, D. B. (2015). *Causal Inference for Statistics, Social, and Biomedical Sciences*
 
-## Contact and Support
-
-- **Issues**: [GitHub Issues](https://github.com/Bodhi8/pycausalsim/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/Bodhi8/pycausalsim/discussions)
-- **Email**: [your-email@example.com]
-
-## Roadmap
-
-### v0.1.0 (Current)
-- [x] Core simulation engine
-- [x] Basic graph discovery (PC, GES)
-- [x] Structural causal models
-- [x] Intervention simulator
-
-### v0.2.0 (Q2 2025)
-- [ ] Neural causal models (NOTEARS)
-- [ ] Uplift modeling
-- [ ] Enhanced visualization
-- [ ] DoWhy/EconML integration
-
-### v0.3.0 (Q3 2025)
-- [ ] Agent-based simulation
-- [ ] Time-series causal discovery
-- [ ] Real-time inference
-- [ ] Comprehensive documentation
-
-### v1.0.0 (Q4 2025)
-- [ ] Production-ready
-- [ ] Full test coverage
-- [ ] Performance optimization
-- [ ] Industry case studies
+And integrates with:
+- [DoWhy](https://github.com/py-why/dowhy) - Microsoft's causal inference library
+- [EconML](https://github.com/py-why/EconML) - Heterogeneous treatment effects
+- [CausalML](https://github.com/uber/causalml) - Uber's uplift modeling library
 
 ## Citation
-
-If you use PyCausalSim in your research, please cite:
 
 ```bibtex
 @software{pycausalsim2025,
   title = {PyCausalSim: Causal Discovery Through Simulation},
-  author = {[Your Name]},
+  author = {Brian Curry},
   year = {2025},
   url = {https://github.com/Bodhi8/pycausalsim}
 }
 ```
 
----
+## Contact
 
-**Made with care for data scientists who want to understand causality, not just correlation.**
-
-*"Correlation is not causation. But simulation can reveal causation."*
+- GitHub: [github.com/Bodhi8/pycausalsim](https://github.com/Bodhi8/pycausalsim)
+- Email: brian@vector1.ai
+- Website: [Vector1 AI](https://vector1.ai)
