@@ -170,10 +170,18 @@ class MarketingAttribution:
                 shapley_values[tp] += (curr_value - prev_value) / n_samples
                 prev_value = curr_value
         
-        # Normalize to sum to 1
-        total = sum(shapley_values.values())
-        if total > 0:
-            shapley_values = {k: v / total for k, v in shapley_values.items()}
+        # Clip negative contributions (attribution credit is non-negative,
+        # consistent with the uplift method), then normalize to sum to 1.
+        # Guard against a degenerate near-zero total, which previously
+        # caused catastrophic blow-up when dividing.
+        clipped = {k: max(0.0, val) for k, val in shapley_values.items()}
+        total = sum(clipped.values())
+        if total > 1e-12:
+            shapley_values = {k: val / total for k, val in clipped.items()}
+        else:
+            # No positive contributions detected - fall back to uniform
+            n = len(self.touchpoint_cols)
+            shapley_values = {k: 1.0 / n for k in self.touchpoint_cols}
         
         self._attribution = shapley_values
         self._incremental_effects = self._compute_incremental_effects()
