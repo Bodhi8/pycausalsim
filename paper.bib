@@ -1,0 +1,90 @@
+@book{pearl2009,
+  author    = {Pearl, Judea},
+  title     = {Causality: Models, Reasoning and Inference},
+  edition   = {2nd},
+  publisher = {Cambridge University Press},
+  year      = {2009},
+  doi       = {10.1017/CBO9780511803161}
+}
+
+@inproceedings{zheng2018,
+  author    = {Zheng, Xun and Aragam, Bryon and Ravikumar, Pradeep and Xing, Eric P.},
+  title     = {{DAGs with NO TEARS}: Continuous Optimization for Structure Learning},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume    = {31},
+  year      = {2018},
+  doi       = {10.48550/arXiv.1803.01422}
+}
+
+@article{sharma2020,
+  author  = {Sharma, Amit and Kiciman, Emre},
+  title   = {{DoWhy}: An End-to-End Library for Causal Inference},
+  journal = {arXiv preprint arXiv:2011.04216},
+  year    = {2020},
+  doi     = {10.48550/arXiv.2011.04216}
+}
+
+@misc{econml2019,
+  author = {{Battocchi, Keith and Dillon, Eleanor and Hei, Maggie and Lewis, Greg and Oka, Paul and Oprescu, Miruna and Syrgkanis, Vasilis}},
+  title  = {{EconML}: A Python Package for ML-Based Heterogeneous Treatment Effects Estimation},
+  year   = {2019},
+  url    = {https://github.com/py-why/EconML},
+  note   = {Version 0.x}
+}
+
+@article{chen2020,
+  author  = {Chen, Huigang and Harinen, Totte and Lee, Jeong-Yoon and Yung, Mike and Zhao, Zhenyu},
+  title   = {{CausalML}: Python Package for Causal Machine Learning},
+  journal = {arXiv preprint arXiv:2002.11631},
+  year    = {2020},
+  doi     = {10.48550/arXiv.2002.11631}
+}
+
+@article{gutierrez2017,
+  author  = {Gutierrez, Pierre and G{\'e}rardy, Jean-Yves},
+  title   = {Causal Inference and Uplift Modelling: A Review of the Literature},
+  journal = {Proceedings of The 3rd International Conference on Predictive Applications and APIs, PMLR},
+  volume  = {67},
+  pages   = {1--13},
+  year    = {2017}
+}
+
+@article{cranmer2020,
+  author  = {Cranmer, Kyle and Brehmer, Johann and Louppe, Gilles},
+  title   = {The Frontier of Simulation-Based Inference},
+  journal = {Proceedings of the National Academy of Sciences},
+  volume  = {117},
+  number  = {48},
+  pages   = {30055--30062},
+  year    = {2020},
+  doi     = {10.1073/pnas.1912789117}
+}
+
+@article{pedregosa2011,
+  author  = {Pedregosa, Fabian and Varoquaux, Ga{\"e}l and Gramfort, Alexandre and Michel, Vincent and Thirion, Bertrand and Grisel, Olivier and Blondel, Mathieu and Prettenhofer, Peter and Weiss, Ron and Dubourg, Vincent and Vanderplas, Jake and Passos, Alexandre and Cournapeau, David and Brucher, Matthieu and Perrot, Matthieu and Duchesnay, {\'E}douard},
+  title   = {Scikit-learn: Machine Learning in {Python}},
+  journal = {Journal of Machine Learning Research},
+  volume  = {12},
+  pages   = {2825--2830},
+  year    = {2011}
+}
+
+@article{shimizu2006,
+  author  = {Shimizu, Shohei and Hoyer, Patrik O. and Hyv{\"a}rinen, Aapo and Kerminen, Antti},
+  title   = {A Linear Non-{Gaussian} Acyclic Model for Causal Discovery},
+  journal = {Journal of Machine Learning Research},
+  volume  = {7},
+  pages   = {2003--2030},
+  year    = {2006}
+}
+
+@article{bang2005,
+  author  = {Bang, Heejung and Robins, James M.},
+  title   = {Doubly Robust Estimation in Missing Data and Causal Inference Models},
+  journal = {Biometrics},
+  volume  = {61},
+  number  = {4},
+  pages   = {962--973},
+  year    = {2005},
+  doi     = {10.1111/j.1541-0420.2005.00377.x}
+}
