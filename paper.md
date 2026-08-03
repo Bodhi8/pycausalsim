@@ -1,90 +1,126 @@
-@book{pearl2009,
-  author    = {Pearl, Judea},
-  title     = {Causality: Models, Reasoning and Inference},
-  edition   = {2nd},
-  publisher = {Cambridge University Press},
-  year      = {2009},
-  doi       = {10.1017/CBO9780511803161}
-}
+---
+title: 'PyCausalSim: A Python framework for causal discovery and effect estimation through simulation'
+tags:
+  - Python
+  - causal inference
+  - structural causal models
+  - simulation
+  - causal discovery
+  - marketing analytics
+authors:
+  - name: Brian Curry
+    orcid: 0009-0002-8555-7475
+    affiliation: 1
+affiliations:
+  - name: Vector1 Research, Kansas City, MO, United States
+    index: 1
+date: 3 August 2026
+bibliography: paper.bib
+---
 
-@inproceedings{zheng2018,
-  author    = {Zheng, Xun and Aragam, Bryon and Ravikumar, Pradeep and Xing, Eric P.},
-  title     = {{DAGs with NO TEARS}: Continuous Optimization for Structure Learning},
-  booktitle = {Advances in Neural Information Processing Systems},
-  volume    = {31},
-  year      = {2018},
-  doi       = {10.48550/arXiv.1803.01422}
-}
+# Summary
 
-@article{sharma2020,
-  author  = {Sharma, Amit and Kiciman, Emre},
-  title   = {{DoWhy}: An End-to-End Library for Causal Inference},
-  journal = {arXiv preprint arXiv:2011.04216},
-  year    = {2020},
-  doi     = {10.48550/arXiv.2011.04216}
-}
+`PyCausalSim` is a Python framework for causal discovery and causal effect
+estimation built around a simulation-first workflow. Rather than treating
+causal discovery, effect estimation, and robustness checking as separate
+exercises in separate tools, `PyCausalSim` unifies them around structural
+causal models (SCMs) [@pearl2009] that can be discovered from data, specified
+by hand, simulated under interventions, and stress-tested against
+misspecification.
 
-@misc{econml2019,
-  author = {{Battocchi, Keith and Dillon, Eleanor and Hei, Maggie and Lewis, Greg and Oka, Paul and Oprescu, Miruna and Syrgkanis, Vasilis}},
-  title  = {{EconML}: A Python Package for ML-Based Heterogeneous Treatment Effects Estimation},
-  year   = {2019},
-  url    = {https://github.com/py-why/EconML},
-  note   = {Version 0.x}
-}
+The core object, `CausalSimulator`, accepts observational data, discovers a
+candidate causal graph using one of several discovery algorithms — spanning
+constraint-based (PC, FCI), score-based (GES, FGES), functional (LiNGAM
+[@shimizu2006]), and continuous-optimization (NOTEARS [@zheng2018])
+families — and exposes `simulate_intervention()`, a do-operator
+[@pearl2009] over the fitted structural model that returns interventional
+effect estimates with uncertainty intervals. Companion methods rank all
+causal drivers of a target (`rank_drivers()`) and search for intervention
+policies under constraints (`optimize_policy()`). A
+`StructuralCausalModel` class supports counterfactual generation with
+evidence conditioning. A validation module implements sensitivity analysis
+with confounding bounds, placebo tests, and refutation tests in the spirit
+of @sharma2020. Applied modules provide experiment analysis with
+doubly-robust effect estimation [@bang2005] and heterogeneity analysis,
+uplift modeling [@gutierrez2017] with effect-based user segmentation, and
+marketing attribution using causal Shapley values with constrained budget
+optimization.
 
-@article{chen2020,
-  author  = {Chen, Huigang and Harinen, Totte and Lee, Jeong-Yoon and Yung, Mike and Zhao, Zhenyu},
-  title   = {{CausalML}: Python Package for Causal Machine Learning},
-  journal = {arXiv preprint arXiv:2002.11631},
-  year    = {2020},
-  doi     = {10.48550/arXiv.2002.11631}
-}
+`PyCausalSim` is implemented on the scientific Python stack (`numpy`,
+`pandas`, `scipy`, `scikit-learn` [@pedregosa2011]), with optional adapter
+integrations to the wider causal ecosystem including DoWhy [@sharma2020]
+and EconML [@econml2019]. It is released under the MIT license.
 
-@article{gutierrez2017,
-  author  = {Gutierrez, Pierre and G{\'e}rardy, Jean-Yves},
-  title   = {Causal Inference and Uplift Modelling: A Review of the Literature},
-  journal = {Proceedings of The 3rd International Conference on Predictive Applications and APIs, PMLR},
-  volume  = {67},
-  pages   = {1--13},
-  year    = {2017}
-}
+# Statement of need
 
-@article{cranmer2020,
-  author  = {Cranmer, Kyle and Brehmer, Johann and Louppe, Gilles},
-  title   = {The Frontier of Simulation-Based Inference},
-  journal = {Proceedings of the National Academy of Sciences},
-  volume  = {117},
-  number  = {48},
-  pages   = {30055--30062},
-  year    = {2020},
-  doi     = {10.1073/pnas.1912789117}
-}
+Applied analysts routinely need to answer interventional questions — "what
+happens to the outcome if we change this variable?" — from observational
+data. The dominant workflow answers correlational questions instead, because
+the causal toolchain is fragmented: graph discovery lives in one library,
+identification and estimation in another, sensitivity analysis in a third,
+and simulation of candidate structural models is typically hand-rolled.
+This fragmentation has practical consequences: analysts skip the robustness
+steps that don't fit the pipeline, and competing causal structures that are
+observationally indistinguishable — a mediator versus a confounder, for
+example — go untested even when they imply opposite decisions.
 
-@article{pedregosa2011,
-  author  = {Pedregosa, Fabian and Varoquaux, Ga{\"e}l and Gramfort, Alexandre and Michel, Vincent and Thirion, Bertrand and Grisel, Olivier and Blondel, Mathieu and Prettenhofer, Peter and Weiss, Ron and Dubourg, Vincent and Vanderplas, Jake and Passos, Alexandre and Cournapeau, David and Brucher, Matthieu and Perrot, Matthieu and Duchesnay, {\'E}douard},
-  title   = {Scikit-learn: Machine Learning in {Python}},
-  journal = {Journal of Machine Learning Research},
-  volume  = {12},
-  pages   = {2825--2830},
-  year    = {2011}
-}
+`PyCausalSim` addresses this gap with a single coherent API in which the
+simulation of structural models is the connective tissue: discovered or
+hypothesized graphs become generative objects that can be simulated under
+known interventions, compared against experimental or quasi-experimental
+evidence, and probed for the sensitivity of their conclusions. This
+simulation-first design also makes the framework suitable as a synthetic
+data-generating engine for downstream research — for example, generating
+training distributions of known causal environments for simulation-based
+inference [@cranmer2020] — a use case the author is actively developing for
+marketing measurement, where structural parameters such as advertising
+carryover and saturation must be inferred from short, confounded panels.
 
-@article{shimizu2006,
-  author  = {Shimizu, Shohei and Hoyer, Patrik O. and Hyv{\"a}rinen, Aapo and Kerminen, Antti},
-  title   = {A Linear Non-{Gaussian} Acyclic Model for Causal Discovery},
-  journal = {Journal of Machine Learning Research},
-  volume  = {7},
-  pages   = {2003--2030},
-  year    = {2006}
-}
+The intended audience is applied data scientists and computational
+researchers — particularly in marketing science, business analytics, and
+economics — who need decision-grade causal answers without assembling a
+bespoke toolchain, as well as researchers who need a programmable SCM
+simulation engine. Existing libraries each cover part of this surface:
+DoWhy [@sharma2020] provides an identification-and-refutation workflow,
+EconML [@econml2019] and CausalML [@chen2020] provide estimators for
+heterogeneous effects, and causal-learn provides discovery algorithms.
+`PyCausalSim` is complementary: it interoperates with these libraries
+through adapters while contributing the simulation layer — interventional
+simulation over discovered or specified SCMs, structure comparison under
+intervention, driver ranking, and policy search — as a first-class, unified
+workflow.
 
-@article{bang2005,
-  author  = {Bang, Heejung and Robins, James M.},
-  title   = {Doubly Robust Estimation in Missing Data and Causal Inference Models},
-  journal = {Biometrics},
-  volume  = {61},
-  number  = {4},
-  pages   = {962--973},
-  year    = {2005},
-  doi     = {10.1111/j.1541-0420.2005.00377.x}
-}
+# Functionality
+
+The framework is organized around five capabilities:
+
+- **Discovery.** Six causal discovery algorithms behind a common interface —
+  PC and FCI (constraint-based), GES and FGES (score-based), LiNGAM
+  (functional, for non-Gaussian data), and NOTEARS (continuous
+  optimization) — returning candidate graphs that can be constrained with
+  domain knowledge and visualized.
+- **Simulation and intervention.** Fitted or user-specified SCMs are
+  generative: `simulate_intervention(variable, value)` implements the
+  do-operator with Monte Carlo simulation and returns effect estimates
+  with confidence intervals; `rank_drivers()` orders all variables by
+  causal effect on the target; `optimize_policy()` searches intervention
+  settings under user constraints; counterfactuals can be generated
+  conditional on observed evidence.
+- **Validation.** `validate()` produces confounding bounds at varying
+  assumed strengths, placebo tests, and multiple refutation methods,
+  summarizing how fragile each conclusion is to violations of the causal
+  assumptions.
+- **Experimentation.** `ExperimentAnalysis` estimates treatment effects
+  from randomized or quasi-experimental data, including a doubly-robust
+  estimator, and analyzes effect heterogeneity across covariates.
+- **Applied modules.** Uplift modeling with segmentation into persuadable,
+  sure-thing, lost-cause, and sleeping-dog cohorts; marketing attribution
+  via causal Shapley values with constrained budget optimization.
+
+# Acknowledgements
+
+The author thanks the maintainers of the open-source causal inference
+ecosystem — in particular DoWhy, EconML, causal-learn, and CausalML — whose
+work this framework builds upon and interoperates with.
+
+# References
