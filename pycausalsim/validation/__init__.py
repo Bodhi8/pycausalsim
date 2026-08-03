@@ -351,8 +351,17 @@ class CausalValidator:
         """Add random common cause and check if estimate changes."""
         from sklearn.linear_model import LinearRegression
         
+        # Build the regressor column list, deduplicating in case the
+        # treatment variable also appears in the confounder list (e.g.
+        # when the auto-selected top driver IS a confounder column).
+        # Duplicate columns silently produce a collinear design matrix
+        # and newer scikit-learn versions reject them outright.
+        cols = [variable] + [
+            c for c in self.simulator.confounders if c != variable
+        ]
+        
         # Original regression
-        X_orig = self.simulator.data[[variable] + self.simulator.confounders]
+        X_orig = self.simulator.data[cols]
         y = self.simulator.data[self.simulator.target]
         
         model_orig = LinearRegression().fit(X_orig, y)
@@ -362,7 +371,7 @@ class CausalValidator:
         data_new = self.simulator.data.copy()
         data_new['_random_confounder'] = np.random.randn(len(data_new))
         
-        X_new = data_new[[variable] + self.simulator.confounders + ['_random_confounder']]
+        X_new = data_new[cols + ['_random_confounder']]
         model_new = LinearRegression().fit(X_new, y)
         coef_new = model_new.coef_[0]
         
