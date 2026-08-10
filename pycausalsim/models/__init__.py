@@ -15,6 +15,8 @@ from scipy import stats
 from collections import defaultdict
 import warnings
 
+from sklearn.model_selection import cross_val_score
+
 
 class StructuralCausalModel:
     """
@@ -140,11 +142,13 @@ class StructuralCausalModel:
             values = data[var].values
             mechanism = {
                 'type': 'root',
+                'values': values, # If root, mechanism values are the noise values
                 'mean': np.mean(values),
                 'std': np.std(values)
             }
             noise = {
                 'type': self.noise_type,
+                'mean': np.mean(values),
                 'std': np.std(values)
             }
             return mechanism, noise
@@ -153,28 +157,67 @@ class StructuralCausalModel:
         X = data[parents].values
         y = data[var].values
         
-        # Try non-linear model first, fall back to linear
+        # Select best GBM config via 3-fold CV, fall back to linear on failure
+
+        candidates = {
+            'GBM': GradientBoostingRegressor(random_state=42),
+
+            } #TODO: Add more candidates, MLP to model pure interaction more efficiently
+                
+        configs = {
+            'GBM': [
+                    {'n_estimators': 25, 'max_depth': 2},
+                    {'n_estimators': 25, 'max_depth': 5},
+                    {'n_estimators': 50, 'max_depth': 3},
+                    {'n_estimators': 50, 'max_depth': 4},
+                    ],
+
+            # 'MLP': [
+            #         {'hidden_layer_sizes': (10,), 'learning_rate_init': 0.001, 'max_iter': 200},
+            #         {'hidden_layer_sizes': (10, 10),'learning_rate_init': 0.001, 'max_iter': 200},
+            #         ],
+            }
+
         try:
-            model = GradientBoostingRegressor(
-                n_estimators=50,
-                max_depth=3,
-                random_state=42
-            )
-            model.fit(X, y)
-            residuals = y - model.predict(X)
+            best_score = -np.inf
+            best_architecture = None
+            best_params = []s
+
+            for architecture, configs in configs.items():
+                for params in configs:
+                    model_obj=candidates[architecture].set_params(**params)
+                    scores = cross_val_score(
+                        model_obj, X, y, cv=3, scoring='neg_mean_squared_error'
+                    )
+                    
+                    mean_score = scores.mean()
+
+                    if mean_score > best_score:
+                        best_architecture = architecture
+                        best_score = mean_score
+                        best_params = params
+
+                model = candidates[best_architecture].set_params(**best_params)
+                model_type = f"{best_architecture}_regression"
+
+                model.fit(X, y)
+                residuals = y - model.predict(X)
+            
         except Exception:
+            model_type = 'Ridge_regression'
             model = Ridge(alpha=1.0)
             model.fit(X, y)
             residuals = y - model.predict(X)
         
         mechanism = {
-            'type': 'regression',
+            'type': model_type,
             'model': model,
             'parents': parents
         }
         
         noise = {
             'type': self.noise_type,
+            'values': residuals,
             'mean': np.mean(residuals),
             'std': np.std(residuals)
         }
@@ -258,12 +301,16 @@ class StructuralCausalModel:
                             mechanism['std'],
                             n_samples
                         )
-                    else:
+                    elif self.noise_type == 'uniform':
                         samples[var] = np.random.uniform(
                             mechanism['mean'] - mechanism['std'] * 1.7,
                             mechanism['mean'] + mechanism['std'] * 1.7,
                             n_samples
                         )
+                    elif self.noise_type == 'empirical': # If empirical, sample from bootstrap of the noise values. This is the same approach as in DoWhy.
+                        samples[var] = np.random.choice(mechanism['values'], n_samples, replace=True)
+                    else:
+                        raise ValueError(f"Unknown noise type: {self.noise_type}")
                 else:
                     # Non-root: apply mechanism + noise
                     parents = mechanism['parents']
@@ -273,12 +320,16 @@ class StructuralCausalModel:
                     
                     if self.noise_type == 'gaussian':
                         noise = np.random.normal(0, noise_params['std'], n_samples)
-                    else:
+                    elif self.noise_type == 'uniform':
                         noise = np.random.uniform(
                             -noise_params['std'] * 1.7,
                             noise_params['std'] * 1.7,
                             n_samples
                         )
+                    elif self.noise_type == 'empirical': # If empirical, sample from bootstrap of the noise values. This is the same approach as in DoWhy.
+                        noise = np.random.choice(noise_params['values'], n_samples, replace=True) 
+                    else:
+                        raise ValueError(f"Unknown noise type: {self.noise_type}")
                     
                     samples[var] = predictions + noise
         
