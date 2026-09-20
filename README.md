@@ -4,7 +4,13 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-**PyCausalSim** is a Python framework for causal discovery and inference through simulation. Unlike correlation-based approaches, PyCausalSim uses counterfactual simulation to establish true causal relationships from observational data, specifically designed for digital metrics optimization.
+**PyCausalSim** is a Python framework for causal discovery and inference through simulation. It answers two kinds of question with the same machinery.
+
+**Backward:** what caused the outcome already in your data? Discover the graph, estimate interventions, validate against unmeasured confounding.
+
+**Forward:** what happens under a policy nobody has tried yet? Specify a graph, unroll it over a horizon, and simulate scenarios far outside observed support, with the extrapolation declared rather than silent.
+
+Most causal libraries do only the first. The second needs time, declared mechanism, interventions on structure rather than value, and a way to score predictions after the fact. That is `pycausalsim.futures`.
 
 ## Why PyCausalSim?
 
@@ -32,11 +38,13 @@ drivers = simulator.rank_drivers()
 ## Key Features
 
 ### 1. Simulation-Based Causal Discovery
+
 - Generate synthetic "what-if" scenarios
 - Test interventions before deploying them
 - Understand non-linear and interaction effects
 
 ### 2. Multiple Discovery Methods
+
 - **Constraint-based**: PC, FCI algorithms
 - **Score-based**: GES, FGES algorithms
 - **Functional**: LiNGAM for non-Gaussian data
@@ -44,6 +52,7 @@ drivers = simulator.rank_drivers()
 - **Hybrid**: Combine methods for robustness
 
 ### 3. Structural Causal Models (SCM)
+
 ```python
 from pycausalsim.models import StructuralCausalModel
 
@@ -58,6 +67,7 @@ counterfactuals = scm.counterfactual(
 ```
 
 ### 4. Marketing Attribution
+
 ```python
 from pycausalsim import MarketingAttribution
 
@@ -71,6 +81,7 @@ optimal_budget = attr.optimize_budget(total_budget=100000)
 ```
 
 ### 5. A/B Test Analysis
+
 ```python
 from pycausalsim import ExperimentAnalysis
 
@@ -82,6 +93,7 @@ het = exp.analyze_heterogeneity(covariates=['user_tenure', 'activity_level'])
 ```
 
 ### 6. Uplift Modeling
+
 ```python
 from pycausalsim.uplift import UpliftModeler
 
@@ -93,6 +105,7 @@ segments = uplift.segment_by_effect()
 ```
 
 ### 7. Built-in Validation
+
 ```python
 # Sensitivity analysis
 sensitivity = simulator.validate()
@@ -100,6 +113,53 @@ sensitivity.confounding_bounds()  # Test unmeasured confounding
 sensitivity.placebo_test()  # Placebo tests
 sensitivity.refute()  # Multiple refutation methods
 ```
+
+### 8. Futures and Scenario Simulation
+
+Causal discovery is retrodictive. It learns a graph from existing data and estimates interventions within that data's support. Forecasting inverts both halves, and `pycausalsim.futures` supplies what the inversion needs.
+
+```python
+from pycausalsim.futures import TemporalSCM, Scenario, SI, compare, rank_drivers
+
+scm = TemporalSCM(horizon=range(2026, 2042), draws=4000, seed=7)
+
+scm.parameter("attrition", "normal", loc=0.045, scale=0.008)
+scm.lever("apprenticeship", default=0.05)
+
+# lags make the unrolled graph acyclic, so identification carries over
+scm.state("senior_stock",
+          lambda c: (c.lag("senior_stock", 1) * (1 - c.p.attrition)
+                     + c.p.conversion * c.lag("junior", 10)),
+          parents=["junior:lag(10)", "senior_stock:lag(1)"],
+          init=lambda p: p.conversion / p.attrition * 100.0)
+
+# extrapolation is declared, never silent
+scm.mechanism("automation ~ token_price", form="logistic",
+              valid_range=(0.0005, 100.0), outside="flag")
+
+# interventions on structure, not only on value
+scm.structural_rule(when="automation > 0.55",
+                    apply=SI.remove_edge("junior", "senior_stock"),
+                    note="training stops being a free byproduct")
+
+funded = Scenario("Funded apprenticeship")
+funded.at(2027).set("apprenticeship", ramp_to=0.72, over=4)
+
+cmp = compare(scm, [Scenario("Drift"), funded], target="wellbeing")
+print(cmp.table())
+rank_drivers(scm, Scenario("Drift"), target="wellbeing")
+```
+
+**What it adds**
+
+- **`TemporalSCM`** unrolls a graph over a horizon. Parents are written `"name"` or `"name:lag(k)"`. State variables carry memory. A cycle at lag zero is an error, because feedback in a dynamic system is feedback across time.
+- **`MechanismPrior`** requires a declared functional form and validity range on any edge that will be driven outside observed data. Every excursion is recorded, so results report which conclusions rest on data and which rest on assumed mechanism.
+- **`StructuralIntervention`** adds, removes and rewires edges, and rules fire per draw. `do()` sets a value; it does not delete an edge, and the most consequential futures questions are structural.
+- **`Scenario`** is a declarative bundle of timed interventions, readable and editable by people who do not write Python.
+- **`ClaimSet`** emits dated, checkable claims with probabilities and a named source, exports them to JSON, and scores them later with a Brier score.
+- **`backtest`** scores the model against observed anchors and reports whether the stated intervals are calibrated.
+
+Full documentation: [`pycausalsim/futures/README.md`](pycausalsim/futures/README.md). Worked example: [`examples/postlabor_futures.py`](examples/postlabor_futures.py), a fifteen-year post-labor transition model with four policy levers and a ten-year apprenticeship lag.
 
 ## Installation
 
@@ -163,6 +223,8 @@ optimal = simulator.optimize_policy(
 3. **Product Feature Impact**: Understand which features actually drive engagement
 4. **Pricing Optimization**: Understand causal price elasticity (not just correlation)
 5. **Retention Analysis**: Identify causal drivers of churn
+6. **Policy Scenario Analysis**: Compare interventions over a horizon, rank levers by causal effect, and publish claims that can be scored later
+7. **Strategic Forecasting**: Simulate futures outside observed support with the extrapolation declared rather than hidden
 
 ## Why Simulation for Causality?
 
@@ -176,7 +238,7 @@ rf = RandomForestRegressor()
 rf.fit(X, y)
 feature_importance = rf.feature_importances_
 
-# Feature importance ≠ causal importance
+# Feature importance != causal importance
 # Tells you what predicts, not what causes
 # Fails with confounding, selection bias, reverse causation
 ```
@@ -213,6 +275,13 @@ pycausalsim/
 │   ├── agents/             # Agent-based simulation
 │   ├── validation/         # Sensitivity analysis
 │   ├── adapters/           # DoWhy/EconML integration
+│   ├── futures/            # Temporal SCMs and scenario forecasting
+│   │   ├── temporal.py     #   TemporalSCM, Context, RunResult
+│   │   ├── mechanism.py    #   MechanismPrior, SupportReport
+│   │   ├── structural.py   #   StructuralIntervention, StructuralRule
+│   │   ├── scenario.py     #   Scenario language
+│   │   ├── results.py      #   Comparison, rank_drivers, ClaimSet
+│   │   └── backtest.py     #   Retrodiction scoring
 │   ├── utils/              # Utilities
 │   └── visualization/      # Plotting
 ├── tests/                  # Test suite
@@ -221,17 +290,39 @@ pycausalsim/
 └── README.md
 ```
 
+## Roadmap
+
+**Shipped in 0.2**
+
+- Temporal SCMs with lags, state variables and per-draw structural rules
+- Declared mechanism priors with out-of-support reporting
+- Scenario language, paired comparison, driver ranking
+- Falsifiable claim sets with Brier scoring
+- Backtesting against observed anchors
+
+**Next**
+
+- **Agent layer for futures.** `agents/` exists but does not yet plug into `TemporalSCM`. Aggregate models report population means, which cannot distinguish two people with identical material conditions and non-comparable lives. Heterogeneous institution access, geography and cohort would recover that.
+- **Geography.** No spatial dimension today, which is the largest omission in the post-labor example. Regional bottleneck prices and migration between regions are the first two edges to add.
+- **Structural uncertainty.** The Monte Carlo covers coefficients, not structure. Sampling over a distribution of graphs is the honest version and is considerably harder.
+- **Scenario DSL in YAML**, so scenarios can be authored and reviewed without touching Python at all.
+- **A public claim ledger.** Exported claim sets are only useful if someone scores them. A registry of dated predictions with resolution sources would give forecasting the accountability mechanism it has never had.
+
 ## Dependencies
 
 **Core:**
+
 - numpy >= 1.20.0
 - pandas >= 1.3.0
 - scipy >= 1.7.0
 - scikit-learn >= 1.0.0
 
 **Optional:**
+
 - matplotlib, networkx, seaborn (visualization)
 - dowhy, econml (integrations)
+
+`pycausalsim.futures` needs numpy only.
 
 ## Contributing
 
@@ -251,11 +342,13 @@ MIT License - see [LICENSE](LICENSE) for details.
 ## Acknowledgments
 
 PyCausalSim builds on research from:
+
 - Pearl, J. (2009). *Causality: Models, Reasoning and Inference*
 - Peters, J., Janzing, D., & Schölkopf, B. (2017). *Elements of Causal Inference*
 - Imbens, G. W., & Rubin, D. B. (2015). *Causal Inference for Statistics, Social, and Biomedical Sciences*
 
 And integrates with:
+
 - [DoWhy](https://github.com/py-why/dowhy) - Microsoft's causal inference library
 - [EconML](https://github.com/py-why/EconML) - Heterogeneous treatment effects
 - [CausalML](https://github.com/uber/causalml) - Uber's uplift modeling library
