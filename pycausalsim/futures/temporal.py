@@ -39,6 +39,7 @@ class Context:
         self._scm = scm
         self.t = t
         self.year = scm.years[t]
+        self.step = self.year          # step label: a year, a YYYYMM month, any sortable int
         self._cur = cur
         self._hist = hist
         self._masks = masks
@@ -125,9 +126,51 @@ class TemporalSCM:
         self._order: list[str] | None = None
 
     # ---------------------------------------------------------------- setup
+    @property
+    def steps(self):
+        """Step labels of the horizon. Same list as `years`, named for any step size."""
+        return self.years
+
     def parameter(self, name, dist="normal", **kw):
-        """Declare a prior. dist in {normal, lognormal, uniform, fixed}."""
+        """
+        Declare a prior. dist in {normal, lognormal, uniform, fixed, choice}.
+
+        choice draws from a finite set: parameter("regime", "choice",
+        values=[0.8, 1.0, 1.3], p=[0.25, 0.5, 0.25]). p is optional.
+        """
+        if dist == "choice":
+            vals = np.asarray(kw.get("values", ()), dtype=float)
+            if vals.size == 0:
+                raise ValueError("choice needs values=[...]")
+            kw["values"] = vals
+            kw["p"] = _normalize(kw.get("p"), len(vals))
         self._param_specs[name] = dict(dist=dist, **kw)
+        return self
+
+    def empirical_path(self, name, paths, weights=None):
+        """
+        An exogenous node whose path is resampled from observed history.
+
+        `paths` has one row per past episode (a past winter, a past year) and
+        one column per step of the horizon. Each draw picks one row, with
+        optional `weights`, so the within-episode correlation across steps is
+        kept intact. The pick is a sampled parameter, which means every
+        scenario in a comparison sees the same episode in the same draw.
+
+        weights let outside probabilities steer the resampling: give more
+        weight to past winters that match a seasonal outlook, for example.
+        """
+        arr = np.asarray(paths, dtype=float)
+        if arr.ndim != 2:
+            raise ValueError("paths must be 2-D: (episodes, steps)")
+        if arr.shape[1] < len(self.years):
+            raise ValueError(
+                f"paths cover {arr.shape[1]} steps but the horizon has "
+                f"{len(self.years)}; give one column per step")
+        key = f"_pick_{name}"
+        self._param_specs[key] = dict(dist="index", n=arr.shape[0],
+                                      p=_normalize(weights, arr.shape[0]))
+        self.exogenous(name, lambda c, a=arr, k=key: a[c.p[k], c.t])
         return self
 
     def lever(self, name, default=0.0):
@@ -225,6 +268,10 @@ class TemporalSCM:
                 out[name] = self.rng.uniform(spec["low"], spec["high"], n)
             elif d == "fixed":
                 out[name] = np.full(n, float(spec["value"]))
+            elif d == "choice":
+                out[name] = self.rng.choice(spec["values"], size=n, p=spec["p"])
+            elif d == "index":
+                out[name] = self.rng.choice(spec["n"], size=n, p=spec["p"])
             else:
                 raise ValueError(f"unknown dist {d!r}")
         return _Params(out)
@@ -304,6 +351,18 @@ class TemporalSCM:
                          scenario_name=(scenario.name if scenario else "baseline"))
 
 
+def _normalize(weights, n):
+    """None -> uniform; otherwise non-negative weights scaled to sum to one."""
+    if weights is None:
+        return None
+    w = np.asarray(weights, dtype=float)
+    if w.shape != (n,):
+        raise ValueError(f"expected {n} weights, got shape {w.shape}")
+    if (w < 0).any() or w.sum() <= 0:
+        raise ValueError("weights must be non-negative and not all zero")
+    return w / w.sum()
+
+
 class _Params:
     """Attribute access over sampled parameter arrays."""
 
@@ -338,6 +397,24 @@ class RunResult:
 
     def mean(self, name):
         return self.series[name].mean(axis=1)
+
+    def window(self, name, start=None, end=None, agg="mean"):
+        """
+        Aggregate a node over a span of steps, per draw.
+
+        run.window("price", 202611, 202703) is each draw's November-to-March
+        average. agg in {mean, sum, min, max, last}. Steps come from the same
+        run, so the correlation across steps inside a draw is preserved.
+        """
+        i0 = 0 if start is None else self.years.index(start)
+        i1 = len(self.years) - 1 if end is None else self.years.index(end)
+        block = self.series[name][i0:i1 + 1]
+        fns = {"mean": np.mean, "sum": np.sum, "min": np.min, "max": np.max}
+        if agg == "last":
+            return block[-1]
+        if agg not in fns:
+            raise ValueError(f"agg must be one of {sorted(fns) + ['last']}")
+        return fns[agg](block, axis=0)
 
     def interval(self, name, lo=5, hi=95):
         s = self.series[name]

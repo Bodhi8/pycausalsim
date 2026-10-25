@@ -4,4 +4,4 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
-claims_2026.json
+claims_2026.jsonexample.log

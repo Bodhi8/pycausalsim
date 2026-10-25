@@ -7,6 +7,9 @@ conditional average treatment effects (CATE).
 
 from typing import Dict, List, Optional, Union, Tuple, Any
 import numpy as np
+
+# NumPy 2.0 renamed trapz to trapezoid and later releases removed trapz.
+_trapezoid = getattr(np, "trapezoid", None) or getattr(np, "trapz")
 import pandas as pd
 from scipy import stats
 from dataclasses import dataclass
@@ -485,7 +488,7 @@ class UpliftModeler:
         if not qini_values:
             return 0.0
         
-        return np.trapz(qini_values) / len(qini_values)
+        return _trapezoid(qini_values) / len(qini_values)
     
     def _compute_auuc(self, data: pd.DataFrame) -> float:
         """Compute Area Under Uplift Curve."""
@@ -510,7 +513,7 @@ class UpliftModeler:
             
             uplift_curve.append(uplift)
         
-        return np.trapz(uplift_curve, fractions)
+        return _trapezoid(uplift_curve, fractions)
     
     def plot_segments(self, ax=None):
         """Plot segment analysis."""
