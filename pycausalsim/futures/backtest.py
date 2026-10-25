@@ -35,9 +35,10 @@ class AnchorScore:
 
 
 class BacktestResult:
-    def __init__(self, scores, window):
+    def __init__(self, scores, window, cases=None):
         self.scores = scores
         self.window = window
+        self.cases = cases or {}
 
     @property
     def coverage(self):
@@ -117,3 +118,29 @@ def backtest(scm, observations: dict, scenario=None, draws=None,
         print(f"backtest: {skipped} observation(s) outside the horizon, skipped")
     window = (scm.years[0], scm.years[-1])
     return BacktestResult(scores, window)
+
+
+def rolling_backtest(cases, scenario=None, draws=None):
+    """
+    Score a model from several forecast origins and pool the results.
+
+    cases: iterable of (label, scm, observations) or
+           (label, scm, observations, scenario). Build each `scm` with only
+           the information available at its origin, for example with the
+           season being tested left out of the calibration. That discipline
+           belongs to the caller; this function pools and reports.
+
+    Returns a BacktestResult whose scores cover every case, with
+    `.cases[label]` holding each origin's own result.
+    """
+    pooled, per_case, labels = [], {}, []
+    for case in cases:
+        label, scm, obs = case[0], case[1], case[2]
+        scen = case[3] if len(case) > 3 else scenario
+        res = backtest(scm, obs, scenario=scen, draws=draws)
+        per_case[label] = res
+        pooled.extend(res.scores)
+        labels.append(label)
+    if not labels:
+        raise ValueError("rolling_backtest needs at least one case")
+    return BacktestResult(pooled, (labels[0], labels[-1]), cases=per_case)

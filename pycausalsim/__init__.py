@@ -5,7 +5,7 @@ A Python framework for discovering and validating causal relationships
 using counterfactual simulation, designed for digital metrics optimization.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __author__ = "Brian Curry"
 
 from .simulator import CausalSimulator

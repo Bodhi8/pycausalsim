@@ -162,6 +162,35 @@ ClaimSet.load("claims_2026.json").score({"entry_gap_25pct": True})
 Brier score is 0 for perfect and 0.25 for a coin flip. Unresolved keys are
 skipped, so a claim set can be scored progressively as the years arrive.
 
+## Resampling history and non-annual steps
+
+```python
+scm = TemporalSCM(horizon=[202611, 202612, 202701, 202702, 202703], step="month")
+
+# one row per past winter, one column per step; each draw replays one winter
+scm.empirical_path("weather", past_winters, weights=outlook_weights)
+
+# finite priors
+scm.parameter("regime", "choice", values=[0.8, 1.0, 1.3], p=[0.25, 0.5, 0.25])
+```
+
+`empirical_path` keeps every episode intact across steps, and the pick is a
+sampled parameter, so every scenario in a comparison sees the same episode in
+the same draw. Weights let outside probabilities steer the resampling. Step
+labels are any sortable integers; `c.step` and `scm.steps` name them.
+
+```python
+cold = Scenario("Cold").path("weather", {202612: -210, 202701: -125})
+run.window("price", 202611, 202703)                  # per-draw winter average
+scm.claim("winter_avg", "winter averages below $2.97",
+          test=lambda r: r.window("price", 202611, 202703) < 2.97,
+          resolve_by=202703)
+```
+
+Take every quantity for one analysis from one run. Each `scm.run()` samples
+fresh parameters, so stitching steps from separate runs breaks the
+correlation inside a draw and narrows every range.
+
 ## Backtesting
 
 ```python
@@ -178,7 +207,21 @@ any work; far below means the model is more confident than its record
 justifies. Backtesting a specified model scores whether the declared mechanism
 reproduces observed anchors, not whether refitted coefficients do.
 
+For forecasts made from many origins, build one model per origin using only
+what was known then, and pool them:
+
+```python
+from pycausalsim.futures import rolling_backtest
+bt = rolling_backtest([(label, scm_for_origin, observations), ...])
+bt.summary(); bt.cases[label].summary()
+```
+
 ## Worked example
+
+`examples/henry_hub_winter.py` forecasts Henry Hub natural gas for winter
+2026-27 from the NYMEX curve, with storage surprises as the causal channel,
+bundled EIA data, scenarios, a hedge-to-budget decision and a
+leave-one-winter-out backtest. A regression test pins its published numbers.
 
 `examples/postlabor_futures.py` is the full model behind *Simulating the Note
 from the Future*: a fifteen-year post-labor transition with four policy levers,

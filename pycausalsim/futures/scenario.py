@@ -68,6 +68,19 @@ class Scenario:
             Intervention(lever, -10**9, to=float(value), note=note))
         return self
 
+    def path(self, lever, values, note=""):
+        """
+        Set a lever step by step: s.path("weather", {202612: -210, 202701: -125}).
+
+        Each value holds from its step until the next one. Pass a dict of
+        {step: value} or a list of (step, value) pairs.
+        """
+        items = values.items() if isinstance(values, dict) else values
+        for step_label, v in sorted(items, key=lambda kv: kv[0]):
+            self.interventions.append(
+                Intervention(lever, int(step_label), to=float(v), note=note))
+        return self
+
     def __or__(self, other):
         merged = Scenario(f"{self.name} + {other.name}")
         merged.interventions = list(self.interventions) + list(other.interventions)
