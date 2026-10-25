@@ -15,8 +15,6 @@ Run this example:
 
 import numpy as np
 import pandas as pd
-import sys
-sys.path.insert(0, '..')
 
 # =============================================================================
 # 1. CAUSAL SIMULATOR - Core Functionality
