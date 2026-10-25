@@ -28,3 +28,24 @@ jobs:
 
       - name: Run test suite
         run: pytest tests/ -v
+
+      - name: Run examples
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+          MPLBACKEND: Agg
+        run: |
+          status=0
+          for f in examples/*.py; do
+            echo "::group::$f"
+            if ! python "$f" > example.log 2>&1; then
+              cat example.log
+              msg=$(tail -n 4 example.log | tr '\n' ' ' | cut -c1-600)
+              echo "::error title=$f failed::$msg"
+              status=1
+            else
+              tail -n 5 example.log
+            fi
+            echo "::endgroup::"
+          done
+          exit $status

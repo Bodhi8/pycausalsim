@@ -7,7 +7,7 @@ import pytest
 
 from pycausalsim.futures import (
     TemporalSCM, Scenario, SI, rank_drivers, compare, backtest,
-    ClaimSet, OutOfSupport)
+    rolling_backtest, ClaimSet, OutOfSupport)
 
 
 # ----------------------------------------------------------------- fixtures
@@ -299,3 +299,128 @@ def test_postlabor_example_reproduces_published_numbers():
     assert eff["institutions"] == pytest.approx(0.136, abs=0.005)
     assert eff["institutions"] / eff["income_floor"] == pytest.approx(2.8, abs=0.15)
     assert eff["institutions"] > eff["apprenticeship"] > eff["ownership"] > eff["income_floor"]
+
+
+# ------------------------------------------------------------ 0.3 additions
+def monthly(draws=500, seed=1, weights=None):
+    """Three monthly steps with resampled episodes, YYYYMM step labels."""
+    paths = np.array([[1.0, 2.0, 3.0], [10.0, 20.0, 30.0], [-1.0, -2.0, -3.0]])
+    scm = TemporalSCM(horizon=[202611, 202612, 202701], step="month",
+                      draws=draws, seed=seed)
+    scm.lever("shift", default=0.0)
+    scm.empirical_path("shock", paths, weights=weights)
+    scm.add_equation("y", lambda c: c["shock"] + c["shift"],
+                     parents=["shock", "shift"])
+    return scm, paths
+
+
+def test_choice_parameter_draws_only_listed_values():
+    scm = TemporalSCM(horizon=range(2020, 2022), draws=4000, seed=3)
+    scm.parameter("regime", "choice", values=[0.8, 1.0, 1.3], p=[0.2, 0.5, 0.3])
+    p = scm.sample_params()
+    assert set(np.unique(p.regime)) <= {0.8, 1.0, 1.3}
+    assert np.mean(p.regime == 1.0) == pytest.approx(0.5, abs=0.03)
+
+
+def test_choice_parameter_needs_values():
+    scm = TemporalSCM(horizon=range(2020, 2022))
+    with pytest.raises(ValueError, match="values"):
+        scm.parameter("regime", "choice")
+
+
+def test_empirical_path_keeps_each_episode_intact():
+    scm, paths = monthly()
+    y = scm.run()["y"]                       # (steps, draws)
+    rows = {tuple(r) for r in paths}
+    assert all(tuple(y[:, d]) in rows for d in range(y.shape[1]))
+
+
+def test_empirical_path_weights_steer_the_draws():
+    scm, paths = monthly(draws=2000, weights=[0.0, 1.0, 0.0])
+    assert np.all(scm.run()["y"][0] == 10.0)
+
+
+def test_empirical_path_is_paired_across_scenarios():
+    scm, _ = monthly()
+    shifted = Scenario("Shifted").set("shift", 5.0)
+    c = compare(scm, [Scenario("Base"), shifted], target="y")
+    d = c["Shifted"]["y"] - c["Base"]["y"]
+    assert np.allclose(d, 5.0)
+
+
+def test_empirical_path_rejects_too_few_steps():
+    scm = TemporalSCM(horizon=[1, 2, 3])
+    with pytest.raises(ValueError, match="steps"):
+        scm.empirical_path("shock", np.zeros((4, 2)))
+
+
+def test_scenario_path_sets_each_step():
+    scm, _ = monthly()
+    s = Scenario("Path").path("shift", {202612: 1.0, 202701: 4.0})
+    lv = scm.run(s).levers["shift"]
+    assert list(lv) == [0.0, 1.0, 4.0]
+
+
+def test_window_aggregates_per_draw():
+    scm, _ = monthly(draws=50)
+    r = scm.run()
+    y = r["y"]
+    assert np.allclose(r.window("y"), y.mean(axis=0))
+    assert np.allclose(r.window("y", 202612, 202701, agg="sum"), y[1] + y[2])
+    assert np.allclose(r.window("y", agg="last"), y[-1])
+    with pytest.raises(ValueError, match="agg"):
+        r.window("y", agg="median")
+
+
+def test_claims_can_test_a_window():
+    scm, _ = monthly(draws=3000)
+    scm.claim("avg_positive", "average shock is positive",
+              test=lambda r: r.window("y", 202611, 202701) > 0,
+              resolve_by=202701)
+    claims = compare(scm, [Scenario("Base")], target="y").falsifiable_claims()
+    assert claims.claims[0].p == pytest.approx(2 / 3, abs=0.03)
+
+
+def test_step_aliases():
+    scm, _ = monthly()
+    seen = []
+    scm.add_equation("probe", lambda c: seen.append(c.step) or np.zeros(scm.draws))
+    scm.run()
+    assert scm.steps == [202611, 202612, 202701]
+    assert seen == [202611, 202612, 202701]
+
+
+def test_rolling_backtest_pools_every_origin():
+    cases = []
+    for k, start in enumerate((2000, 2005)):
+        scm = TemporalSCM(horizon=range(start, start + 3), draws=500, seed=k)
+        scm.parameter("level", "normal", loc=10.0, scale=1.0)
+        scm.add_equation("x", lambda c: c.p.level)
+        cases.append((f"origin {start}", scm, {"x": {start: 10.2, start + 1: 9.7}}))
+    bt = rolling_backtest(cases)
+    assert len(bt.scores) == 4
+    assert set(bt.cases) == {"origin 2000", "origin 2005"}
+    assert bt.window == ("origin 2000", "origin 2005")
+    with pytest.raises(ValueError):
+        rolling_backtest([])
+
+
+def test_henry_hub_example_reproduces_published_numbers():
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "examples"))
+    from henry_hub_winter import (build, MARKET, POLAR_VORTEX, LNG_UPSIDE,
+                                  MONTHS, hedge_for_budget, winter_backtest)
+
+    c = compare(build(), [MARKET, POLAR_VORTEX, LNG_UPSIDE], target="price")
+    winter = c[MARKET.name].window("price", MONTHS[0], MONTHS[-1])
+    assert c[MARKET.name].at("price", 202701).mean() == pytest.approx(3.22, abs=0.03)
+    assert winter.mean() == pytest.approx(2.70, abs=0.03)
+    assert np.mean(winter < 2.974) == pytest.approx(0.70, abs=0.02)
+    assert c[LNG_UPSIDE.name].window("price").mean() == pytest.approx(3.01, abs=0.03)
+    assert not c[POLAR_VORTEX.name].support.clean
+    assert hedge_for_budget(c[MARKET.name])[0] == pytest.approx(0.65)
+
+    bt = winter_backtest()
+    assert len(bt.scores) == 40
+    assert bt.coverage == pytest.approx(0.875, abs=0.03)
+    assert bt.mape == pytest.approx(0.223, abs=0.01)

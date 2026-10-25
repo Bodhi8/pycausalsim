@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pycausalsim"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Causal Discovery and Inference Through Simulation"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
     {name = "Brian Curry", email = "brian@vector1.ai"}
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -19,11 +19,10 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Information Analysis",
 ]
@@ -37,6 +36,9 @@ keywords = [
     "a/b testing",
     "marketing attribution",
     "uplift modeling",
+    "forecasting",
+    "scenario analysis",
+    "structural causal model",
 ]
 dependencies = [
     "numpy>=1.20.0",
@@ -80,12 +82,15 @@ Documentation = "https://pycausalsim.readthedocs.io"
 Repository = "https://github.com/Bodhi8/pycausalsim"
 Issues = "https://github.com/Bodhi8/pycausalsim/issues"
 
+[tool.setuptools.dynamic]
+version = {attr = "pycausalsim.__version__"}
+
 [tool.setuptools.packages.find]
 exclude = ["tests*", "examples*", "docs*"]
 
 [tool.black]
 line-length = 100
-target-version = ['py38', 'py39', 'py310', 'py311']
+target-version = ['py310', 'py311', 'py312', 'py313']
 include = '\.pyi?$'
 exclude = '''
 /(
@@ -107,7 +112,7 @@ profile = "black"
 line_length = 100
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
