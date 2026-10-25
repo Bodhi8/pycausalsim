@@ -196,6 +196,10 @@ class _At:
     def lever(self, name):
         return self._r.levers[name][self._r.years.index(self.year)]
 
+    def window(self, node, start=None, end=None, agg="mean"):
+        """Per-draw aggregate over a span, for claims about averages or totals."""
+        return self._r.window(node, start, end, agg)
+
 
 def rank_drivers(scm, baseline: Scenario, levers=None, target="wellbeing",
                  at_year=None, intensity=0.75, ramp_from=None, over=5,

@@ -28,3 +28,12 @@ jobs:
 
       - name: Run test suite
         run: pytest tests/ -v
+
+      - name: Run examples
+        shell: bash
+        run: |
+          for f in examples/*.py; do
+            echo "::group::$f"
+            python "$f"
+            echo "::endgroup::"
+          done

@@ -15,6 +15,8 @@ This module supplies what that inversion needs:
   rank_drivers             single-lever do() at matched intensity
   ClaimSet                 dated, checkable claims with a Brier score
   backtest                 retrodiction against observed anchors
+  rolling_backtest         the same from many forecast origins, pooled
+  empirical_path           resample whole episodes from history, optionally weighted
 
 The simulation and validation machinery of the core library still applies.
 The discovery layer does not.
@@ -26,7 +28,7 @@ from .structural import StructuralIntervention, StructuralRule
 from .scenario import Scenario, Intervention, ramp, step
 from .results import (Comparison, rank_drivers, DriverEffect,
                       FalsifiableClaim, ClaimSet)
-from .backtest import backtest, BacktestResult, AnchorScore
+from .backtest import backtest, rolling_backtest, BacktestResult, AnchorScore
 
 SI = StructuralIntervention
 
@@ -37,10 +39,10 @@ __all__ = [
     "Scenario", "Intervention", "ramp", "step",
     "Comparison", "rank_drivers", "DriverEffect",
     "FalsifiableClaim", "ClaimSet",
-    "backtest", "BacktestResult", "AnchorScore",
+    "backtest", "rolling_backtest", "BacktestResult", "AnchorScore",
 ]
 
-__version__ = "0.2.0.dev0"
+__version__ = "0.3.0"
 
 
 def compare(scm, scenarios, target, draws=None, params=None, baseline=None):

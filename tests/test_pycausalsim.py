@@ -389,6 +389,21 @@ class TestUpliftModeler:
         
         assert len(segments) <= 4
 
+    def test_uplift_evaluate_runs_on_current_numpy(self, uplift_data):
+        """AUUC and Qini use trapezoid integration, renamed in NumPy 2."""
+        from pycausalsim.uplift import UpliftModeler
+
+        uplift = UpliftModeler(
+            data=uplift_data,
+            treatment='treatment',
+            outcome='outcome',
+            features=['feature']
+        )
+        uplift.fit(method='two_model')
+        metrics = uplift.evaluate()
+
+        assert all(np.isfinite(v) for v in metrics.values() if isinstance(v, float))
+
 
 class TestCausalDiscovery:
     """Tests for causal discovery algorithms."""

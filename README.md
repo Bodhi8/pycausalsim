@@ -1,7 +1,10 @@
 # PyCausalSim
 
+![PyCausalSim: data condensing into a causal graph that unrolls into simulated futures](docs/images/pycausalsim-hero.jpg)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![tests](https://github.com/Bodhi8/pycausalsim/actions/workflows/test.yml/badge.svg)](https://github.com/Bodhi8/pycausalsim/actions/workflows/test.yml)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 **PyCausalSim** is a Python framework for causal discovery and inference through simulation. It answers two kinds of question with the same machinery.
@@ -45,11 +48,13 @@ drivers = simulator.rank_drivers()
 
 ### 2. Multiple Discovery Methods
 
-- **Constraint-based**: PC, FCI algorithms
-- **Score-based**: GES, FGES algorithms
+- **Constraint-based**: PC
+- **Score-based**: GES (`"fges"` is accepted as an alias for the same search)
 - **Functional**: LiNGAM for non-Gaussian data
-- **Neural**: NOTEARS (deep learning-based)
+- **Continuous optimization**: NOTEARS
 - **Hybrid**: Combine methods for robustness
+
+FCI, which allows for latent confounders, is not implemented yet.
 
 ### 3. Structural Causal Models (SCM)
 
@@ -157,11 +162,25 @@ rank_drivers(scm, Scenario("Drift"), target="wellbeing")
 - **`StructuralIntervention`** adds, removes and rewires edges, and rules fire per draw. `do()` sets a value; it does not delete an edge, and the most consequential futures questions are structural.
 - **`Scenario`** is a declarative bundle of timed interventions, readable and editable by people who do not write Python.
 - **`ClaimSet`** emits dated, checkable claims with probabilities and a named source, exports them to JSON, and scores them later with a Brier score.
-- **`backtest`** scores the model against observed anchors and reports whether the stated intervals are calibrated.
+- **`backtest`** scores the model against observed anchors and reports whether the stated intervals are calibrated. **`rolling_backtest`** does the same from many forecast origins and pools the result.
+- **`empirical_path`** resamples whole episodes from history, such as past winters, so the correlation across steps survives. Optional weights let outside probabilities, a seasonal outlook for example, steer the draws.
+- **`RunResult.window`** aggregates a node over a span per draw, and claims can test it: "the November to March average settles below the strip."
+- Steps need not be years. Any sortable integer label works, such as `202611` for November 2026, and `c.step` and `scm.steps` name them that way.
 
-Full documentation: [`pycausalsim/futures/README.md`](pycausalsim/futures/README.md). Worked example: [`examples/postlabor_futures.py`](examples/postlabor_futures.py), a fifteen-year post-labor transition model with four policy levers and a ten-year apprenticeship lag.
+One habit matters more than any feature: take every quantity for one analysis from **one run**. Each `scm.run()` draws fresh parameters, so mixing months from separate runs breaks the correlation inside a draw and makes ranges too narrow. `compare` and `RunResult.window` keep you on the right side of this.
+
+Full documentation: [`pycausalsim/futures/README.md`](pycausalsim/futures/README.md). Worked examples:
+
+- [`examples/henry_hub_winter.py`](examples/henry_hub_winter.py): Henry Hub natural gas for winter 2026-27, monthly, anchored on the NYMEX futures curve, with storage surprises as the causal channel, whole-winter weather resampling, LNG and freeze-off scenarios, a hedge-to-budget decision and a leave-one-winter-out backtest on bundled EIA data.
+- [`examples/postlabor_futures.py`](examples/postlabor_futures.py): a fifteen-year post-labor transition model with four policy levers and a ten-year apprenticeship lag.
 
 ## Installation
+
+```bash
+pip install pycausalsim
+```
+
+Or the latest from GitHub:
 
 ```bash
 pip install git+https://github.com/Bodhi8/pycausalsim.git
@@ -292,6 +311,15 @@ pycausalsim/
 
 ## Roadmap
 
+**Shipped in 0.3**
+
+- `empirical_path` for resampling whole historical episodes, with optional weights
+- `choice` priors, `Scenario.path` for step-by-step lever values, `RunResult.window` and window claims
+- `rolling_backtest` for pooled multi-origin backtests
+- Monthly and other non-annual horizons, named with `c.step` and `scm.steps`
+- A Henry Hub natural gas example with bundled EIA data and a regression test
+- NumPy 2 compatibility for uplift metrics, Python 3.10+, a single version source
+
 **Shipped in 0.2**
 
 - Temporal SCMs with lags, state variables and per-draw structural rules
@@ -322,7 +350,7 @@ pycausalsim/
 - matplotlib, networkx, seaborn (visualization)
 - dowhy, econml (integrations)
 
-`pycausalsim.futures` needs numpy only.
+`pycausalsim.futures` needs numpy only. The Henry Hub example also uses pandas. Python 3.10 or later.
 
 ## Contributing
 
