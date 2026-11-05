@@ -17,6 +17,10 @@ This module supplies what that inversion needs:
   backtest                 retrodiction against observed anchors
   rolling_backtest         the same from many forecast origins, pooled
   empirical_path           resample whole episodes from history, optionally weighted
+  marketing_worlds         many simulated brands with known media returns, for
+                           grading marketing mix models
+  media_plan_scm           play a media plan forward from posterior response curves
+  compare_plans            quarter totals, gains and extrapolation flags per plan
 
 The simulation and validation machinery of the core library still applies.
 The discovery layer does not.
@@ -29,6 +33,7 @@ from .scenario import Scenario, Intervention, ramp, step
 from .results import (Comparison, rank_drivers, DriverEffect,
                       FalsifiableClaim, ClaimSet)
 from .backtest import backtest, rolling_backtest, BacktestResult, AnchorScore
+from .marketing import marketing_worlds, MarketingWorlds, media_plan_scm, compare_plans
 
 SI = StructuralIntervention
 
@@ -40,9 +45,10 @@ __all__ = [
     "Comparison", "rank_drivers", "DriverEffect",
     "FalsifiableClaim", "ClaimSet",
     "backtest", "rolling_backtest", "BacktestResult", "AnchorScore",
+    "marketing_worlds", "MarketingWorlds", "media_plan_scm", "compare_plans",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 
 def compare(scm, scenarios, target, draws=None, params=None, baseline=None):

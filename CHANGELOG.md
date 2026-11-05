@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0 (2026-11-05)
+
+### Added
+- `pycausalsim.futures.marketing`: marketing mix models as temporal causal models.
+  - `marketing_worlds(n_worlds, weeks, hard, seed)`: many simulated brands at once,
+    one per draw, from a declared graph. Seasonal demand drives both paid search
+    spend and sales; online video peaks one to three weeks after it airs; with
+    `hard=True`, unobserved product launches raise spend and demand together and
+    social creative wears out. Each world carries its answer key (true ROAS and
+    marginal ROAS from a 1% spend bump), plus `best_plan()` and `steady_sales()`
+    for grading budget decisions.
+  - `media_plan_scm(curves, current, weeks)`: play a budget plan forward week by
+    week from posterior response curves (for example
+    `papilon.MMM.posterior_curves()`), with carryover, the ramp from the current
+    mix and joint posterior uncertainty. `sustained_max` declares a mechanism
+    prior on each response curve, so spend beyond what the brand has sustained is
+    flagged as extrapolation.
+  - `compare_plans(scm, plans)`: quarter totals, gain against the first plan with
+    a 90% interval, probability of beating it and extrapolation flags.
+
 ## 0.3.0 (2026-10-25)
 
 ### Added
