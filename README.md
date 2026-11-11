@@ -174,6 +174,27 @@ Full documentation: [`pycausalsim/futures/README.md`](pycausalsim/futures/README
 - [`examples/henry_hub_winter.py`](examples/henry_hub_winter.py): Henry Hub natural gas for winter 2026-27, monthly, anchored on the NYMEX futures curve, with storage surprises as the causal channel, whole-winter weather resampling, LNG and freeze-off scenarios, a hedge-to-budget decision and a leave-one-winter-out backtest on bundled EIA data.
 - [`examples/postlabor_futures.py`](examples/postlabor_futures.py): a fifteen-year post-labor transition model with four policy levers and a ten-year apprenticeship lag.
 
+### 9. Grading marketing mix models (0.5)
+
+```python
+from pycausalsim.futures import marketing_worlds, worlds_from_graph, lift_test, leaderboard
+from pycausalsim.futures import papilon_estimator, ols_estimator
+
+worlds = marketing_worlds(60, hard=True, seed=7)             # 60 brands, each with an answer key
+worlds = marketing_worlds(60, response="s_curve", competitor=True)   # harder: S-curves, competitor shocks
+worlds = worlds_from_graph(graph, 60, hide=["launch"])       # your own structure, a driver withheld
+
+test = lift_test(worlds, 0, "paid_search", weeks=8)          # measured return, standard error, truth
+leaderboard({"papilon": papilon_estimator(), "ols": ols_estimator()}, worlds, ids=range(12))
+```
+
+An estimator is any function `(df, info) -> {"roas": {channel: (estimate, p05, p95)},
+"plan": spend}`, so a model from any library can be scored on the same brands:
+interval coverage, error and bias on return, share of the best possible budget gain
+captured, and share of brands where its plan lost money. `worlds_from_graph` takes a
+`papilon.MarketingGraph`, so the worlds a model is graded on share the structure the
+analyst declared for the real brand.
+
 ## Installation
 
 ```bash
@@ -364,6 +385,9 @@ pytest tests/
 ```
 
 ## License
+
+PyCausalSim, Papilon and Vector1 are trademarks of Brian Curry; see [NOTICE](NOTICE).
+The license covers the code, not the names.
 
 MIT License - see [LICENSE](LICENSE) for details.
 
