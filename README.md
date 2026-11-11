@@ -195,6 +195,9 @@ captured, and share of brands where its plan lost money. `worlds_from_graph` tak
 `papilon.MarketingGraph`, so the worlds a model is graded on share the structure the
 analyst declared for the real brand.
 
+The [open leaderboard](https://github.com/Bodhi8/papilon/blob/main/benchmarks/LEADERBOARD.md)
+in the Papilon repository is built on these functions and accepts entries for any model.
+
 ## Installation
 
 ```bash
