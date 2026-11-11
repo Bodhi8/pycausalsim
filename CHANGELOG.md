@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0 (unreleased)
+## 0.5.0 (2026-11-11)
 
 ### Changed
 - License changed from MIT to the Apache License, Version 2.0, the same license as
