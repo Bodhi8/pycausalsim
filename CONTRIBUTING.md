@@ -55,3 +55,13 @@ Discussion or reach out at brian@vector1.ai.
 Be respectful and constructive. We follow the spirit of the
 [Contributor Covenant](https://www.contributor-covenant.org/): harassment
 or exclusionary behavior of any kind is not tolerated.
+
+## Licensing of contributions
+
+PyCausalSim is licensed under the Apache License 2.0 from version 0.5.0. By submitting
+a contribution you license it on the same terms (Section 5 of the license) and
+certify, under the Developer Certificate of Origin, that you have the right to submit
+it: sign off your commits with `git commit -s`. Do not include code or text copied
+from other projects unless its license allows it and you keep its notice. New source
+files carry the license header. See [GOVERNANCE.md](GOVERNANCE.md) and
+[TRADEMARKS.md](TRADEMARKS.md).

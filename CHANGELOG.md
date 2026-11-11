@@ -2,6 +2,13 @@
 
 ## 0.5.0 (unreleased)
 
+### Changed
+- License changed from MIT to the Apache License, Version 2.0, the same license as
+  Papilon. It adds an explicit patent grant from contributors, requires derivative
+  works to keep the NOTICE file, and does not license the project names. Versions
+  0.4.0 and earlier remain available under the MIT License. Every source file carries
+  the license header; a test checks it.
+
 ### Added
 - `futures.worlds_from_graph(graph, ...)`: simulated brands whose structure is a
   declared knowledge graph (a `papilon.MarketingGraph` or its `to_dict()`). Drivers
