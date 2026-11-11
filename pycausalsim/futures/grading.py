@@ -78,7 +78,8 @@ def grade(estimator, worlds, ids=None, bound_mult: float = 3.0) -> pd.DataFrame:
         "worlds": int(out.world.nunique()), "coverage_90": float(out.covered.mean()),
         "abs_error": float(out.error.abs().mean()), "bias": float(out.error.mean()),
         "plan_capture": float(g[:, 0].sum() / g[:, 1].sum()) if gains else np.nan,
-        "plan_lost_money": float(np.mean(g[:, 0] < 0)) if gains else np.nan,
+        # a plan that leaves the mix unchanged scores a rounding-error "loss"; do not count it
+        "plan_lost_money": float(np.mean(g[:, 0] < -1e-6 * np.maximum(g[:, 1], 1.0))) if gains else np.nan,
         "coverage_by_channel": out.groupby("channel", sort=False).covered.mean().to_dict(),
         "bias_by_channel": out.groupby("channel", sort=False).error.mean().to_dict(),
     }
