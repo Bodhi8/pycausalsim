@@ -1,0 +1,17 @@
+PyCausalSim
+Copyright (c) 2025-2026 Brian Curry / Vector1 Research (https://vector1.ai)
+
+"PyCausalSim", "Papilon", "Vector1" and "Vector1 Research" are trademarks of
+Brian Curry. The MIT License covers the code. It does not grant permission to use
+these names or marks to name, endorse or promote other products, except to state
+accurately that a work is derived from or compatible with PyCausalSim.
+
+Methods first published in this repository, with the release that introduced them
+(see CHANGELOG.md):
+
+  - Temporal structural causal models with declared mechanism priors and
+    out-of-support flagging (0.2.0)
+  - Marketing worlds with answer keys for grading marketing mix models, and
+    week-by-week play-forward of budget plans from posterior curves (0.4.0)
+  - Worlds compiled from a marketing knowledge graph, simulated lift tests, and
+    the estimator-agnostic grading harness (0.5.0)

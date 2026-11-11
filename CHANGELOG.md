@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+### Added
+- `futures.worlds_from_graph(graph, ...)`: simulated brands whose structure is a
+  declared knowledge graph (a `papilon.MarketingGraph` or its `to_dict()`). Drivers
+  with `sets_spend` and `drives` edges become confounders, observed or hidden;
+  `mediates` makes one channel's spend follow another's advertising, and the answer
+  key reports each channel's direct and total return. `hide=[...]` withholds a driver
+  from the data to show what not measuring it costs.
+- `futures.lift_test(worlds, i, channel, ...)`: a simulated geo holdout or scale-up on
+  any world, replayed through the causal model so the true incremental return is
+  exact, with a standard error from the design (weeks, geo share, pre-period fit).
+  The result drops into `papilon.MMM(roi_priors=...)`.
+- `futures.grade(estimator, worlds)` and `futures.leaderboard({...}, worlds)`: score
+  any marketing mix model, from any library, on the same worlds: interval coverage,
+  ROAS error and bias, share of the best possible budget gain captured and share of
+  brands where its plan lost money. Ships `papilon_estimator` and `ols_estimator`.
+- `marketing_worlds(response="s_curve")`: S-shaped response curves, the functional
+  form a concave model gets wrong. `marketing_worlds(competitor=True)`: unobserved
+  competitor campaigns that depress demand while display spend rises in answer.
+- `media_plan_scm` plays plans forward on S-shaped curves when the posterior curves
+  carry `shape` (Papilon 0.5).
+- `MarketingWorlds.channels`, `.controls`, `.target`, `.l_max`; `truth()` reports
+  `shape`.
+
+### Unchanged
+- Worlds made with the 0.4 arguments are identical to 0.4.0, value for value; the new
+  options draw from a separate random stream. A regression test pins this.
+
 ## 0.4.0 (2026-11-05)
 
 ### Added
