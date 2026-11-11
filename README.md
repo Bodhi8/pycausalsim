@@ -2,7 +2,7 @@
 
 ![PyCausalSim: data condensing into a causal graph that unrolls into simulated futures](docs/images/pycausalsim-hero.jpg)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![tests](https://github.com/Bodhi8/pycausalsim/actions/workflows/test.yml/badge.svg)](https://github.com/Bodhi8/pycausalsim/actions/workflows/test.yml)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
@@ -386,10 +386,13 @@ pytest tests/
 
 ## License
 
-PyCausalSim, Papilon and Vector1 are trademarks of Brian Curry; see [NOTICE](NOTICE).
-The license covers the code, not the names.
 
-MIT License - see [LICENSE](LICENSE) for details.
+Apache License 2.0, free for commercial use. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Versions 0.4.0 and earlier were released under the MIT License and remain available
+under it.
+
+PyCausalSim, Papilon and Vector1 are trademarks of Brian Curry. The license covers the
+code, not the names: see [TRADEMARKS.md](TRADEMARKS.md).
 
 ## Acknowledgments
 
