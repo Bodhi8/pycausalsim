@@ -2,7 +2,7 @@
 
 ![PyCausalSim: data condensing into a causal graph that unrolls into simulated futures](docs/images/pycausalsim-hero.jpg)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![tests](https://github.com/Bodhi8/pycausalsim/actions/workflows/test.yml/badge.svg)](https://github.com/Bodhi8/pycausalsim/actions/workflows/test.yml)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
@@ -173,6 +173,27 @@ Full documentation: [`pycausalsim/futures/README.md`](pycausalsim/futures/README
 
 - [`examples/henry_hub_winter.py`](examples/henry_hub_winter.py): Henry Hub natural gas for winter 2026-27, monthly, anchored on the NYMEX futures curve, with storage surprises as the causal channel, whole-winter weather resampling, LNG and freeze-off scenarios, a hedge-to-budget decision and a leave-one-winter-out backtest on bundled EIA data.
 - [`examples/postlabor_futures.py`](examples/postlabor_futures.py): a fifteen-year post-labor transition model with four policy levers and a ten-year apprenticeship lag.
+
+### 9. Grading marketing mix models (0.5)
+
+```python
+from pycausalsim.futures import marketing_worlds, worlds_from_graph, lift_test, leaderboard
+from pycausalsim.futures import papilon_estimator, ols_estimator
+
+worlds = marketing_worlds(60, hard=True, seed=7)             # 60 brands, each with an answer key
+worlds = marketing_worlds(60, response="s_curve", competitor=True)   # harder: S-curves, competitor shocks
+worlds = worlds_from_graph(graph, 60, hide=["launch"])       # your own structure, a driver withheld
+
+test = lift_test(worlds, 0, "paid_search", weeks=8)          # measured return, standard error, truth
+leaderboard({"papilon": papilon_estimator(), "ols": ols_estimator()}, worlds, ids=range(12))
+```
+
+An estimator is any function `(df, info) -> {"roas": {channel: (estimate, p05, p95)},
+"plan": spend}`, so a model from any library can be scored on the same brands:
+interval coverage, error and bias on return, share of the best possible budget gain
+captured, and share of brands where its plan lost money. `worlds_from_graph` takes a
+`papilon.MarketingGraph`, so the worlds a model is graded on share the structure the
+analyst declared for the real brand.
 
 ## Installation
 
@@ -365,7 +386,13 @@ pytest tests/
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+
+Apache License 2.0, free for commercial use. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Versions 0.4.0 and earlier were released under the MIT License and remain available
+under it.
+
+PyCausalSim, Papilon and Vector1 are trademarks of Brian Curry. The license covers the
+code, not the names: see [TRADEMARKS.md](TRADEMARKS.md).
 
 ## Acknowledgments
 

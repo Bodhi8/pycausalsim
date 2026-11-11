@@ -49,7 +49,7 @@ optimization.
 `PyCausalSim` is implemented on the scientific Python stack (`numpy`,
 `pandas`, `scipy`, `scikit-learn` [@pedregosa2011]), with optional adapter
 integrations to the wider causal ecosystem including DoWhy [@sharma2020]
-and EconML [@econml2019]. It is released under the MIT license.
+and EconML [@econml2019]. It is released under the Apache License 2.0.
 
 # Statement of need
 
