@@ -204,3 +204,29 @@ def test_media_plan_scm_uses_curve_shape():
                       {"current": cur, "tilt": [8.0, 0.0]})
     assert flat.loc["tilt", "gain_vs_first"] < 0          # concave: an even split is best
     assert s.loc["tilt", "gain_vs_first"] > 0             # S-shaped: concentrating clears the threshold
+
+
+# ----------------------------------------------------------------- 1.0
+def test_simulate_loop_runs_each_policy():
+    pytest.importorskip("papilon", minversion="1.0")
+    from pycausalsim.futures import compare_loops, marketing_worlds
+    w = marketing_worlds(2, weeks=104 + 2 * 13, seed=3)
+    out = compare_loops(w, [0], policies=("static", "loop"), cycles=2, model_kwargs={"delayed": ["online_video"]})
+    assert set(out.policy) == {"static", "loop"} and len(out) == 4
+    s = out.attrs["summary"]
+    assert {"abs_error", "coverage_90", "capture"} <= set(s.columns)
+    loop = out[out.policy == "loop"]
+    assert loop.explore.str.contains("/").all()
+    with pytest.raises(ValueError):
+        compare_loops(w, [0], policies=("static",), cycles=5)
+
+
+def test_media_plan_scm_accepts_kernels_and_logistic():
+    from pycausalsim.futures import compare_plans, media_plan_scm
+    kern = np.zeros((1, 2, 8)); kern[0, :, 2] = 1.0              # all carryover lands two weeks later
+    curves = {"media": ["a", "b"], "beta": np.array([[100.0, 100.0]]), "half_sat": np.array([[10.0, 10.0]]),
+              "alpha": np.array([[np.nan, np.nan]]), "peak": np.array([[np.nan, np.nan]]),
+              "shape": np.ones((1, 2)), "kernel": kern, "saturation": ["logistic", "hill"], "l_max": 8}
+    out = compare_plans(media_plan_scm(curves, np.array([10.0, 10.0]), weeks=12),
+                        {"now": [10.0, 10.0], "more a": [20.0, 0.0]})
+    assert np.isfinite(out.loc["more a", "gain_vs_first"])

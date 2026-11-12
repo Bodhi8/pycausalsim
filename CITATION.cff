@@ -6,7 +6,7 @@ authors:
   - family-names: Curry
     given-names: Brian J.
     affiliation: Vector1 Research
-version: 0.5.0
+version: 0.6.0
 license: Apache-2.0
 repository-code: "https://github.com/Bodhi8/pycausalsim"
 url: "https://vector1.ai"

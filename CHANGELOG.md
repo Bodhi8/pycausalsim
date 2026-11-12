@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0 (unreleased)
+
+### Added
+- `futures.simulate_loop` and `futures.compare_loops`: run a measurement loop
+  (`papilon.Loop`, Papilon 1.0) against a simulated brand quarter after quarter. The world
+  responds to the spend the loop chose; recommended lift tests run in the world and come
+  back with the noise of a matched-market design. Each cycle is graded on the error and
+  coverage of the estimated returns, the true gain of the plan and realized sales. Compares
+  a model fitted once, one refit each quarter, and the full loop.
+- `media_plan_scm` accepts any carryover kernel and logistic saturation from Papilon 1.0's
+  `posterior_curves()`.
+
 ## 0.5.0 (2026-11-11)
 
 ### Changed

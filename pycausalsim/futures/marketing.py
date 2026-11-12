@@ -402,7 +402,9 @@ def media_plan_scm(curves: dict, current, weeks: int = 13, draws: int | None = N
         P[f"beta_{c}"] = curves["beta"][idx, j]
         P[f"hs_{c}"] = curves["half_sat"][idx, j]
         P[f"shape_{c}"] = curves["shape"][idx, j] if "shape" in curves else np.ones(n)
-        w = _kernel(curves["alpha"][idx, j], curves["peak"][idx, j], l_max)
+        w = (curves["kernel"][idx, j] if "kernel" in curves
+             else _kernel(curves["alpha"][idx, j], curves["peak"][idx, j], l_max))
+        P[f"logistic_{c}"] = bool("saturation" in curves and curves["saturation"][j] == "logistic")
         scm.lever(f"spend_{c}", default=float(cur[j]))
         scm.add_equation(f"x_{c}", lambda c_, c=c: np.full(n, c_.lever(f"spend_{c}")),
                          pre_history=[float(cur[j])] * (l_max - 1))
@@ -411,8 +413,11 @@ def media_plan_scm(curves: dict, current, weeks: int = 13, draws: int | None = N
             return sum(wk[:, k] * (c_[f"x_{c}"] if k == 0 else c_.lag(f"x_{c}", k)) for k in range(l_max))
         scm.add_equation(f"adstock_{c}", adstock,
                          parents=[f"x_{c}"] + [f"x_{c}:lag({k})" for k in range(1, l_max)])
-        scm.add_equation(f"effect_{c}", lambda c_, c=c: c_.p[f"beta_{c}"] * c_[f"adstock_{c}"] ** c_.p[f"shape_{c}"]
-                         / (c_[f"adstock_{c}"] ** c_.p[f"shape_{c}"] + c_.p[f"hs_{c}"] ** c_.p[f"shape_{c}"]),
+        scm.add_equation(f"effect_{c}", lambda c_, c=c: c_.p[f"beta_{c}"] * (
+                             (1 - np.exp(-c_[f"adstock_{c}"] / c_.p[f"hs_{c}"])) / (1 + np.exp(-c_[f"adstock_{c}"] / c_.p[f"hs_{c}"]))
+                             if c_.p[f"logistic_{c}"] else
+                             c_[f"adstock_{c}"] ** c_.p[f"shape_{c}"]
+                             / (c_[f"adstock_{c}"] ** c_.p[f"shape_{c}"] + c_.p[f"hs_{c}"] ** c_.p[f"shape_{c}"])),
                          parents=[f"adstock_{c}"])
         if sustained_max is not None:
             scm.mechanism(f"effect_{c} ~ adstock_{c}", form="saturating",

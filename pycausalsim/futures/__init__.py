@@ -37,6 +37,7 @@ This module supplies what that inversion needs:
   lift_test                a simulated geo holdout on any world: measured return, standard error, truth
   worlds_from_graph        worlds whose structure is a declared knowledge graph
   grade, leaderboard       score any marketing mix model, from any library, on the same worlds
+  simulate_loop            replay a measurement loop quarter by quarter against known truth
 
 The simulation and validation machinery of the core library still applies.
 The discovery layer does not.
@@ -52,6 +53,7 @@ from .backtest import backtest, rolling_backtest, BacktestResult, AnchorScore
 from .marketing import (marketing_worlds, MarketingWorlds, media_plan_scm, compare_plans,
                         lift_test, worlds_from_graph)
 from .grading import grade, leaderboard, papilon_estimator, ols_estimator
+from .loop import simulate_loop, compare_loops
 
 SI = StructuralIntervention
 
@@ -65,9 +67,10 @@ __all__ = [
     "backtest", "rolling_backtest", "BacktestResult", "AnchorScore",
     "marketing_worlds", "MarketingWorlds", "media_plan_scm", "compare_plans",
     "lift_test", "worlds_from_graph", "grade", "leaderboard", "papilon_estimator", "ols_estimator",
+    "simulate_loop", "compare_loops",
 ]
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 
 def compare(scm, scenarios, target, draws=None, params=None, baseline=None):
