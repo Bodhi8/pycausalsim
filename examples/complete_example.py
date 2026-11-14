@@ -40,7 +40,7 @@ from pycausalsim import CausalSimulator
 
 # Generate synthetic e-commerce data
 np.random.seed(42)
-n = 1000
+n = 5000
 
 # True causal structure:
 # traffic_source -> page_load_time -> conversion_rate
@@ -53,7 +53,9 @@ price = 20 + np.random.normal(0, 5, n)
 device_type = np.random.choice([0, 1, 2], n)  # 0=mobile, 1=desktop, 2=tablet
 
 # True conversion model (with causal effects)
-conversion_prob = 0.15 - 0.03 * page_load_time + 0.02 * traffic_source - 0.005 * price
+# Chosen so the probability stays positive for nearly every visitor; a formula that is
+# clipped at its floor for most rows would leave no effect in the data to find.
+conversion_prob = 0.40 - 0.05 * page_load_time + 0.03 * traffic_source - 0.006 * price
 conversion_prob = np.clip(conversion_prob, 0.01, 0.99)
 conversion_rate = np.random.binomial(1, conversion_prob) * 100  # Convert to percentage
 
@@ -82,11 +84,12 @@ print("\nDiscovering causal structure...")
 simulator.discover_graph(method='ges')
 print(f"Learned graph: {simulator.graph}")
 
-# Simulate intervention: What if we reduce load time to 2 seconds?
-print("\nSimulating intervention: page_load_time = 2.0 seconds")
+# Simulate intervention: what if every page loaded in 3.2 seconds?
+# (True effect: 5 points of conversion per second, so about +2.5 points here.)
+print("\nSimulating intervention: page_load_time = 3.2 seconds")
 effect = simulator.simulate_intervention(
     variable='page_load_time',
-    value=2.0,
+    value=3.2,
     n_simulations=500
 )
 

@@ -17,6 +17,31 @@
   The `scm` method's interval previously reflected only injected noise and was far too
   narrow.
 - A non-DataFrame `data` argument raises `TypeError` as documented.
+- `validate()` reported every effect as fully robust: its "bounds" were the estimate plus
+  or minus a fixed percentage of itself, so they never crossed zero and the robustness
+  value was always 1.0. It now computes the robustness value and confounding bounds of
+  Cinelli and Hazlett (2020) from a linear outcome model. The placebo and stability
+  checks compared correlations with an effect in the target's units; they now re-estimate
+  the effect itself.
+- `optimize_policy` evaluated settings from the target's direct parents only and searched
+  over variables that do not cause the target. It now propagates joint interventions
+  through the graph and searches over causes of the target.
+- `rank_drivers` silently accepted `method='shap'` and `'gradient'` and ignored them, and
+  ranked a variable whose effect could not be estimated as zero. Unknown methods now
+  raise, and such a variable is left out with a warning.
+- `set_graph` and `discover_graph` accepted graphs with cycles and self-loops. Both now
+  check that the graph is acyclic and names only columns of the data. Edges that
+  discovery could not orient are oriented from the declared confounder and treatment
+  roles, or by column order with a warning.
+- `CausalEffect.summary()` printed the effect multiplied by 100 and called it the
+  relative change. It now reports the effect as a share of the baseline outcome.
+- README examples for `validate()` called methods that do not exist, and
+  `examples/complete_example.py` generated data in which conversion was clipped to its
+  floor for almost every row, so there was no effect to find.
+
+### Known issues
+- `discover_graph(method='notears')` can return a graph with a self-loop. This is now
+  reported as an error instead of being used.
 
 ### Changed
 - `simulate_intervention` takes `n_bootstrap` (default `min(n_simulations, 100)`), the
@@ -30,8 +55,11 @@
   range, since tree-based mechanisms cannot extrapolate.
 
 ### Added
-- `tests/test_known_truth.py`: the estimator is checked against simulated data with
-  known direct, mediated, confounded and null effects.
+- `tests/test_known_truth.py`: intervention effects, driver ranking, sensitivity analysis,
+  policy optimization and discovery-to-simulation are checked against simulated data with
+  known answers.
+- `CausalEffect.baseline_outcome`; `n_bootstrap` on `rank_drivers` and `validate`;
+  `grid_points` on `optimize_policy`.
 
 ## 0.6.0 (unreleased)
 
