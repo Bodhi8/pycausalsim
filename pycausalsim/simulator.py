@@ -67,6 +67,8 @@ class CausalSimulator:
         confounders: Optional[List[str]] = None,
         random_state: Optional[int] = None
     ):
+        if not isinstance(data, pd.DataFrame):
+            raise TypeError("data must be a pandas DataFrame")
         self.data = data.copy()
         self.target = target
         self.treatment_vars = treatment_vars or []
@@ -85,7 +87,9 @@ class CausalSimulator:
         self._all_vars = list(data.columns)
         self._feature_vars = [c for c in data.columns if c != target]
         
-        # Set random state
+        # Bootstrap resampling uses its own generator, so results with a fixed
+        # random_state do not depend on other code touching NumPy's global state.
+        self._rng = np.random.default_rng(random_state)
         if random_state is not None:
             np.random.seed(random_state)
     
@@ -183,14 +187,21 @@ class CausalSimulator:
         value: float,
         n_simulations: int = 1000,
         method: str = 'monte_carlo',
-        condition: Optional[Dict[str, Any]] = None
+        condition: Optional[Dict[str, Any]] = None,
+        n_bootstrap: Optional[int] = None
     ) -> CausalEffect:
         """
-        Simulate the causal effect of an intervention.
-        
-        Uses counterfactual simulation to estimate what would happen
-        if we set a variable to a specific value.
-        
+        Estimate the causal effect of setting a variable to a value.
+
+        The estimate is ``E[target | do(variable = value)] - E[target]``. The
+        intervention is propagated through every variable downstream of
+        ``variable`` in the graph, so effects that travel through mediators are
+        counted.
+
+        Uncertainty comes from a bootstrap that refits the model on each
+        resample, so the interval reflects how well the data pin down the
+        mechanisms, not only which rows were drawn.
+
         Parameters
         ----------
         variable : str
@@ -198,32 +209,57 @@ class CausalSimulator:
         value : float
             The value to set the variable to
         n_simulations : int
-            Number of Monte Carlo simulations
+            Upper bound on the number of bootstrap refits (see ``n_bootstrap``)
         method : str
-            Simulation method: 'monte_carlo', 'scm', 'backdoor'
+            'monte_carlo' or 'scm': fit a mechanism for each variable and
+            propagate the intervention through the graph (the two names are
+            equivalent). 'backdoor': linear regression of the target on the
+            variable and a backdoor adjustment set read from the graph.
         condition : dict, optional
             Conditions to apply (e.g., {'traffic_source': 'paid'})
-            
+        n_bootstrap : int, optional
+            Number of bootstrap refits. Defaults to ``min(n_simulations, 100)``;
+            each refit trains the mechanisms again, so large values are slow.
+
         Returns
         -------
         CausalEffect
-            Object containing the causal effect estimate and confidence interval
-            
+            Point estimate from the full data, a 95% percentile interval from
+            the bootstrap, and a two-sided p-value from the bootstrap standard
+            error. ``n_simulations`` on the result is the number of refits used.
+
+        Notes
+        -----
+        Mechanisms are tree ensembles, which cannot extrapolate: an
+        intervention value outside the observed range of ``variable`` is
+        treated as the nearest observed value, and a warning is raised.
+
         Examples
         --------
         >>> effect = simulator.simulate_intervention('page_load_time', 2.0)
-        >>> print(f"Effect: {effect.point_estimate:.2%}")
-        >>> print(f"95% CI: [{effect.ci_lower:.2%}, {effect.ci_upper:.2%}]")
+        >>> print(f"Effect: {effect.point_estimate:.3f}")
+        >>> print(f"95% CI: [{effect.ci_lower:.3f}, {effect.ci_upper:.3f}]")
         """
         if self._scm is None:
             raise RuntimeError("Must call discover_graph() first or set_graph()")
-        
+
         if variable not in self.data.columns:
             raise ValueError(f"Variable '{variable}' not in data")
-        
+
+        if variable == self.target:
+            raise ValueError("Cannot intervene on the target variable itself")
+
+        if method not in ('monte_carlo', 'scm', 'backdoor'):
+            raise ValueError(f"Unknown method: {method}")
+
+        if n_bootstrap is None:
+            n_bootstrap = min(int(n_simulations), 100)
+        if n_bootstrap < 2:
+            raise ValueError("n_bootstrap must be at least 2")
+
         # Get original value
         original_value = self.data[variable].mean()
-        
+
         # Apply conditions if specified
         data = self.data
         if condition is not None:
@@ -231,141 +267,143 @@ class CausalSimulator:
             for k, v in condition.items():
                 mask &= (data[k] == v)
             data = data[mask]
-        
+
         if len(data) == 0:
             raise ValueError("No data matches the specified conditions")
-        
-        # Run simulation based on method
-        if method == 'monte_carlo':
-            effects = self._simulate_monte_carlo(data, variable, value, n_simulations)
-        elif method == 'scm':
-            effects = self._simulate_scm(data, variable, value, n_simulations)
-        elif method == 'backdoor':
-            effects = self._simulate_backdoor(data, variable, value, n_simulations)
+
+        if method != 'backdoor':
+            lo, hi = self.data[variable].min(), self.data[variable].max()
+            if value < lo or value > hi:
+                warnings.warn(
+                    f"Intervention value {value} for '{variable}' is outside its observed "
+                    f"range [{lo:.4g}, {hi:.4g}]. Tree-based mechanisms cannot extrapolate, "
+                    "so the effect is estimated as if the value were at the nearest "
+                    "observed extreme.",
+                    UserWarning, stacklevel=2
+                )
+
+        if method == 'backdoor':
+            adjustment_set = self._get_adjustment_set(variable)
+
+            def estimate(frame):
+                return self._backdoor_adjustment(frame, variable, value, adjustment_set)
         else:
-            raise ValueError(f"Unknown method: {method}")
-        
-        # Compute statistics
-        point_estimate = np.mean(effects)
+            def estimate(frame):
+                return self._scm_effect(frame, variable, value)
+
+        point_estimate = float(estimate(data))
+
+        n = len(data)
+        effects = np.zeros(n_bootstrap)
+        for i in range(n_bootstrap):
+            idx = self._rng.integers(0, n, size=n)
+            effects[i] = estimate(data.iloc[idx])
+
         ci_lower, ci_upper = np.percentile(effects, [2.5, 97.5])
-        
-        # P-value (two-tailed test against null of zero effect)
-        t_stat = point_estimate / (np.std(effects) / np.sqrt(len(effects)) + 1e-10)
-        p_value = 2 * (1 - stats.t.cdf(abs(t_stat), df=len(effects)-1))
-        
+
+        # Two-sided p-value against zero effect. The bootstrap standard deviation
+        # is itself the standard error of the estimate; it is not divided by the
+        # number of replicates.
+        se = float(np.std(effects, ddof=1))
+        if se > 0:
+            p_value = float(2 * stats.norm.sf(abs(point_estimate) / se))
+        else:
+            p_value = 1.0 if point_estimate == 0 else 0.0
+
         return CausalEffect(
             variable=variable,
             intervention_value=value,
             original_value=original_value,
             target=self.target,
             point_estimate=point_estimate,
-            ci_lower=ci_lower,
-            ci_upper=ci_upper,
+            ci_lower=float(ci_lower),
+            ci_upper=float(ci_upper),
             p_value=p_value,
-            n_simulations=n_simulations,
+            n_simulations=n_bootstrap,
             method=method,
             samples=effects
         )
-    
-    def _simulate_monte_carlo(
-        self,
-        data: pd.DataFrame,
-        variable: str,
-        value: float,
-        n_simulations: int
-    ) -> np.ndarray:
-        """Monte Carlo simulation for causal effect."""
-        effects = np.zeros(n_simulations)
-        n_samples = len(data)
-        
-        for i in range(n_simulations):
-            # Bootstrap sample
-            idx = np.random.choice(n_samples, size=n_samples, replace=True)
-            sample = data.iloc[idx].copy()
-            
-            # Factual outcome
-            y_factual = sample[self.target].values
-            
-            # Counterfactual: intervene on variable
-            sample_cf = sample.copy()
-            sample_cf[variable] = value
-            
-            # Predict counterfactual outcome using SCM
-            y_counterfactual = self._scm.predict(sample_cf, self.target)
-            
-            # Average treatment effect
-            effects[i] = np.mean(y_counterfactual) - np.mean(y_factual)
-        
-        return effects
-    
-    def _simulate_scm(
-        self,
-        data: pd.DataFrame,
-        variable: str,
-        value: float,
-        n_simulations: int
-    ) -> np.ndarray:
-        """SCM-based simulation with noise."""
-        effects = np.zeros(n_simulations)
-        
-        for i in range(n_simulations):
-            # Generate counterfactual using SCM
-            cf_data = self._scm.counterfactual(
-                intervention={variable: value},
-                data=data,
-                noise_scale=0.1
-            )
-            
-            y_factual = data[self.target].values
-            y_counterfactual = cf_data[self.target].values
-            
-            effects[i] = np.mean(y_counterfactual) - np.mean(y_factual)
-        
-        return effects
-    
-    def _simulate_backdoor(
-        self,
-        data: pd.DataFrame,
-        variable: str,
-        value: float,
-        n_simulations: int
-    ) -> np.ndarray:
-        """Backdoor adjustment simulation."""
-        effects = np.zeros(n_simulations)
-        
-        # Get backdoor adjustment set
-        adjustment_set = self._get_adjustment_set(variable)
-        
-        for i in range(n_simulations):
-            # Bootstrap
-            idx = np.random.choice(len(data), size=len(data), replace=True)
-            sample = data.iloc[idx]
-            
-            # Stratified estimation
-            effect = self._backdoor_adjustment(
-                sample, variable, value, adjustment_set
-            )
-            effects[i] = effect
-        
-        return effects
-    
+
+    # ------------------------------------------------------------------
+    # Graph helpers
+    # ------------------------------------------------------------------
+
+    def _parents(self, var: str) -> List[str]:
+        return list((self._graph or {}).get(var, []))
+
+    def _descendants(self, var: str) -> set:
+        """All variables downstream of ``var`` in the graph."""
+        graph = self._graph or {}
+        children: Dict[str, List[str]] = {}
+        for child, parents in graph.items():
+            for p in parents:
+                children.setdefault(p, []).append(child)
+        seen: set = set()
+        stack = list(children.get(var, []))
+        while stack:
+            v = stack.pop()
+            if v not in seen:
+                seen.add(v)
+                stack.extend(children.get(v, []))
+        return seen
+
+    def _ancestors(self, var: str) -> set:
+        """All variables upstream of ``var`` in the graph."""
+        seen: set = set()
+        stack = self._parents(var)
+        while stack:
+            v = stack.pop()
+            if v not in seen:
+                seen.add(v)
+                stack.extend(self._parents(v))
+        return seen
+
+    def _scm_effect(self, frame: pd.DataFrame, variable: str, value: float) -> float:
+        """Effect of do(variable = value) on the target, with mechanisms fitted on ``frame``.
+
+        Only the mechanisms on a causal path from ``variable`` to the target are
+        fitted: those of the target and of the mediators between the two. If the
+        target is not downstream of ``variable`` the effect is exactly zero.
+        """
+        downstream = self._descendants(variable)
+        if self.target not in downstream:
+            return 0.0
+
+        on_path = (downstream & self._ancestors(self.target)) | {self.target}
+        inputs = set()
+        for v in on_path:
+            inputs.update(self._parents(v))
+        columns = [c for c in frame.columns if c in on_path or c in inputs or c == variable]
+
+        # Variables off the path keep their observed values, so they are roots here.
+        subgraph = {c: (self._parents(c) if c in on_path else []) for c in columns}
+        scm = StructuralCausalModel(graph=subgraph)
+        sub = frame[columns]
+        scm.fit(sub)
+        counterfactual = scm.counterfactual(intervention={variable: value}, data=sub)
+        return float(np.mean(counterfactual[self.target].values) - np.mean(sub[self.target].values))
+
     def _get_adjustment_set(self, treatment: str) -> List[str]:
-        """Get minimal adjustment set for backdoor criterion."""
-        if self._graph is None:
-            return self.confounders
-        
-        # Use confounders if specified, otherwise find from graph
-        if self.confounders:
-            return self.confounders
-        
-        # Find all ancestors of treatment and target that are common
-        adjustment_set = []
-        for var in self._feature_vars:
-            if var != treatment and var != self.target:
-                adjustment_set.append(var)
-        
-        return adjustment_set
-    
+        """Backdoor adjustment set for the effect of ``treatment`` on the target.
+
+        With confounders supplied by the user, those are used. Otherwise the
+        parents of the treatment in the graph are used, which block every
+        backdoor path when the graph has no hidden common causes. Variables
+        downstream of the treatment (mediators, the target's other effects) are
+        never adjusted for: doing so removes or distorts the effect.
+        """
+        downstream = self._descendants(treatment) if self._graph is not None else set()
+        candidates = list(self.confounders) if self.confounders else self._parents(treatment)
+
+        dropped = [c for c in candidates if c in downstream]
+        if dropped:
+            warnings.warn(
+                f"Not adjusting for {dropped}: downstream of '{treatment}' in the graph.",
+                UserWarning, stacklevel=3
+            )
+        return [c for c in candidates
+                if c not in downstream and c != treatment and c != self.target]
+
     def _backdoor_adjustment(
         self,
         data: pd.DataFrame,
@@ -373,23 +411,23 @@ class CausalSimulator:
         value: float,
         adjustment_set: List[str]
     ) -> float:
-        """Compute backdoor-adjusted effect."""
+        """Backdoor-adjusted effect from a linear outcome model."""
         from sklearn.linear_model import LinearRegression
-        
-        # Fit outcome model with treatment and confounders
+
+        # Fit outcome model with treatment and the adjustment set
         X = data[[treatment] + adjustment_set].values
         y = data[self.target].values
-        
+
         model = LinearRegression()
         model.fit(X, y)
-        
+
         # Predict under intervention
         X_intervened = X.copy()
         X_intervened[:, 0] = value
         y_intervened = model.predict(X_intervened)
-        
-        return np.mean(y_intervened) - np.mean(y)
-    
+
+        return float(np.mean(y_intervened) - np.mean(y))
+
     def rank_drivers(
         self,
         standardize: bool = True,
