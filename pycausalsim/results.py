@@ -37,6 +37,7 @@ class CausalEffect:
         p_value: Statistical significance
         n_simulations: Number of simulations run
         method: The method used for estimation
+        baseline_outcome: Mean of the target before the intervention
     """
     variable: str
     intervention_value: float
@@ -50,6 +51,7 @@ class CausalEffect:
     method: str = "simulation"
     effect_type: str = "ate"  # ate, att, cate
     samples: Optional[np.ndarray] = None
+    baseline_outcome: Optional[float] = None  # mean of the target before the intervention
     
     def summary(self) -> str:
         """Return a formatted summary of the causal effect."""
@@ -61,7 +63,8 @@ class CausalEffect:
             f"Target variable: {self.target}",
             f"",
             f"Effect on {self.target}: {self.point_estimate:+.4f}",
-            f"  ({self.point_estimate:+.2%} relative change)" if abs(self.original_value) > 1e-10 else "",
+            (f"  ({self.point_estimate / self.baseline_outcome:+.2%} of the baseline {self.baseline_outcome:.4f})"
+             if self.baseline_outcome is not None and abs(self.baseline_outcome) > 1e-10 else ""),
             f"95% CI: [{self.ci_lower:+.4f}, {self.ci_upper:+.4f}]",
             f"P-value: {self.p_value:.4f}",
             f"",
