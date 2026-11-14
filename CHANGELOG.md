@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- `CausalSimulator.simulate_intervention` now counts effects that travel through
+  mediators. The default `monte_carlo` method predicted the target from its direct
+  parents only, so for `x -> m -> y` it reported an effect of zero.
+- The `backdoor` method adjusted for every other variable in the data, mediators
+  included, which removed mediated effects. It now adjusts for the parents of the
+  treatment (or the confounders you supply) and never for variables downstream of it.
+- P-values divided the bootstrap spread by the square root of the number of replicates,
+  so they shrank toward zero as `n_simulations` grew. With no true effect, 95% of
+  simulated datasets were reported significant at 0.05. The bootstrap standard deviation
+  is now used as the standard error.
+- Confidence intervals now come from refitting the model on each bootstrap resample.
+  The `scm` method's interval previously reflected only injected noise and was far too
+  narrow.
+- A non-DataFrame `data` argument raises `TypeError` as documented.
+
+### Changed
+- `simulate_intervention` takes `n_bootstrap` (default `min(n_simulations, 100)`), the
+  number of bootstrap refits. `n_simulations` on the returned effect is the number used.
+  Refitting is slower than the old resampling.
+- `monte_carlo` and `scm` are now the same estimator.
+- The point estimate comes from the full data; the bootstrap supplies the interval.
+- Bootstrap draws use the simulator's own random generator, so a fixed `random_state`
+  gives the same result regardless of other use of NumPy's global state.
+- A warning is raised when the intervention value is outside the variable's observed
+  range, since tree-based mechanisms cannot extrapolate.
+
+### Added
+- `tests/test_known_truth.py`: the estimator is checked against simulated data with
+  known direct, mediated, confounded and null effects.
+
 ## 0.6.0 (unreleased)
 
 ### Added
