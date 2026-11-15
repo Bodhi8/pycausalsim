@@ -1,5 +1,66 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- `CausalSimulator.simulate_intervention` now counts effects that travel through
+  mediators. The default `monte_carlo` method predicted the target from its direct
+  parents only, so for `x -> m -> y` it reported an effect of zero.
+- The `backdoor` method adjusted for every other variable in the data, mediators
+  included, which removed mediated effects. It now adjusts for the parents of the
+  treatment (or the confounders you supply) and never for variables downstream of it.
+- P-values divided the bootstrap spread by the square root of the number of replicates,
+  so they shrank toward zero as `n_simulations` grew. With no true effect, 95% of
+  simulated datasets were reported significant at 0.05. The bootstrap standard deviation
+  is now used as the standard error.
+- Confidence intervals now come from refitting the model on each bootstrap resample.
+  The `scm` method's interval previously reflected only injected noise and was far too
+  narrow.
+- A non-DataFrame `data` argument raises `TypeError` as documented.
+- `validate()` reported every effect as fully robust: its "bounds" were the estimate plus
+  or minus a fixed percentage of itself, so they never crossed zero and the robustness
+  value was always 1.0. It now computes the robustness value and confounding bounds of
+  Cinelli and Hazlett (2020) from a linear outcome model. The placebo and stability
+  checks compared correlations with an effect in the target's units; they now re-estimate
+  the effect itself.
+- `optimize_policy` evaluated settings from the target's direct parents only and searched
+  over variables that do not cause the target. It now propagates joint interventions
+  through the graph and searches over causes of the target.
+- `rank_drivers` silently accepted `method='shap'` and `'gradient'` and ignored them, and
+  ranked a variable whose effect could not be estimated as zero. Unknown methods now
+  raise, and such a variable is left out with a warning.
+- `set_graph` and `discover_graph` accepted graphs with cycles and self-loops. Both now
+  check that the graph is acyclic and names only columns of the data. Edges that
+  discovery could not orient are oriented from the declared confounder and treatment
+  roles, or by column order with a warning.
+- `CausalEffect.summary()` printed the effect multiplied by 100 and called it the
+  relative change. It now reports the effect as a share of the baseline outcome.
+- README examples for `validate()` called methods that do not exist, and
+  `examples/complete_example.py` generated data in which conversion was clipped to its
+  floor for almost every row, so there was no effect to find.
+
+### Known issues
+- `discover_graph(method='notears')` can return a graph with a self-loop. This is now
+  reported as an error instead of being used.
+
+### Changed
+- `simulate_intervention` takes `n_bootstrap` (default `min(n_simulations, 100)`), the
+  number of bootstrap refits. `n_simulations` on the returned effect is the number used.
+  Refitting is slower than the old resampling.
+- `monte_carlo` and `scm` are now the same estimator.
+- The point estimate comes from the full data; the bootstrap supplies the interval.
+- Bootstrap draws use the simulator's own random generator, so a fixed `random_state`
+  gives the same result regardless of other use of NumPy's global state.
+- A warning is raised when the intervention value is outside the variable's observed
+  range, since tree-based mechanisms cannot extrapolate.
+
+### Added
+- `tests/test_known_truth.py`: intervention effects, driver ranking, sensitivity analysis,
+  policy optimization and discovery-to-simulation are checked against simulated data with
+  known answers.
+- `CausalEffect.baseline_outcome`; `n_bootstrap` on `rank_drivers` and `validate`;
+  `grid_points` on `optimize_policy`.
+
 ## 0.6.0 (unreleased)
 
 ### Added

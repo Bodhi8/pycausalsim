@@ -113,10 +113,12 @@ segments = uplift.segment_by_effect()
 
 ```python
 # Sensitivity analysis
-sensitivity = simulator.validate()
-sensitivity.confounding_bounds()  # Test unmeasured confounding
-sensitivity.placebo_test()  # Placebo tests
-sensitivity.refute()  # Multiple refutation methods
+sensitivity = simulator.validate('price')
+print(sensitivity.summary())
+sensitivity.robustness_value     # confounding needed to explain the effect away (0 fragile, 1 robust)
+sensitivity.confounding_bounds   # range of the effect under a hidden confounder of given strength
+sensitivity.placebo_results      # a shuffled treatment should show no significant effect
+sensitivity.refutation_results   # random common cause, placebo treatment, data subsets
 ```
 
 ### 8. Futures and Scenario Simulation
@@ -254,7 +256,7 @@ for var, effect in drivers:
 
 # Step 4: Find optimal policy
 optimal = simulator.optimize_policy(
-    objective='maximize_conversion',
+    objective='maximize',
     constraints={'price': (10, 50)}
 )
 ```
