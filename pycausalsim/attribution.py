@@ -12,113 +12,293 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 """
-Marketing Attribution with Causal Inference.
+Marketing attribution.
 
-Move beyond last-touch attribution to understand true incremental value
-of each marketing channel.
+Two kinds of method live here and they answer different questions.
+
+**Incremental methods** (``shapley``, ``logistic``, ``linear``, ``uplift``) fit a
+model of conversion given which touchpoints a user was exposed to, and ask what
+would have happened without them. Conversions that would have happened with no
+marketing at all are a baseline and are credited to no channel. A channel with no
+effect earns no credit and a channel that lowers conversion shows a negative
+contribution.
+
+**Path heuristics** (``markov``, ``first_touch``, ``last_touch``) describe where
+converting journeys went. They need the order of contact and say nothing about
+what a channel caused.
+
+Assumptions of the incremental methods
+--------------------------------------
+- Exposure is read as exposed / not exposed (any value above zero is exposed).
+- Whatever drives both exposure and conversion is measured and passed as
+  ``covariate_cols``. Without that, a channel shown mainly to people who were
+  going to convert anyway is credited with their conversions. Only an experiment
+  removes this assumption.
+- The outcome model is logistic for a 0/1 conversion column and linear otherwise.
 """
 
-from typing import Dict, List, Optional, Union, Tuple, Any
+from itertools import combinations
+from math import factorial
+from typing import Callable, Dict, FrozenSet, List, Optional, Tuple
+import warnings
+
 import numpy as np
 import pandas as pd
-from scipy import stats
-from collections import defaultdict
-import warnings
+
+INCREMENTAL_METHODS = ('shapley', 'logistic', 'linear', 'uplift')
+PATH_METHODS = ('markov', 'last_touch', 'first_touch')
+_EXACT_SHAPLEY_MAX = 8
 
 
 class MarketingAttribution:
     """
-    Causal marketing attribution using multiple methods.
-    
-    Unlike last-touch or first-touch attribution, this uses causal inference
-    to determine the true incremental contribution of each touchpoint.
-    
+    Marketing attribution from user-level touchpoint data.
+
     Parameters
     ----------
     data : pd.DataFrame
-        Touchpoint data with conversions
+        One row per user (or journey).
     conversion_col : str
-        Name of conversion column
-    touchpoint_cols : list of str
-        Names of touchpoint columns
+        Outcome column. 0/1 for conversions; any other numeric outcome, such as
+        revenue, is modelled linearly.
+    touchpoint_cols : list of str, optional
+        Exposure columns, one per channel. Any value above zero counts as
+        exposed. Detected when omitted (from ``path_col`` if that is given).
     user_col : str, optional
-        User identifier column
-        
+        User identifier column. Not used in estimation.
+    random_state : int, optional
+        Seed for the sampling steps. The global NumPy state is left alone.
+    covariate_cols : list of str, optional
+        Numeric user-level variables that drive both exposure and conversion,
+        such as prior purchases or intent. The incremental methods adjust for them.
+    path_col : str, optional
+        Column holding each journey's ordered channels, as a list or as a string
+        such as ``"search > email > search"``. Used by the path heuristics.
+        Without it they take the order of ``touchpoint_cols`` as the order of
+        contact, which is an assumption.
+
     Examples
     --------
     >>> attr = MarketingAttribution(
     ...     data=touchpoint_data,
     ...     conversion_col='converted',
-    ...     touchpoint_cols=['email', 'display', 'search', 'social', 'direct']
+    ...     touchpoint_cols=['email', 'display', 'search', 'social']
     ... )
     >>> attr.fit(method='shapley')
-    >>> weights = attr.get_attribution()
+    >>> attr.get_attribution()            # shares of incremental conversions
+    >>> attr.get_incremental_effects()    # effect of an exposure, per channel
     """
-    
+
     def __init__(
         self,
         data: pd.DataFrame,
         conversion_col: str = 'converted',
         touchpoint_cols: Optional[List[str]] = None,
         user_col: Optional[str] = None,
-        random_state: Optional[int] = None
+        random_state: Optional[int] = None,
+        covariate_cols: Optional[List[str]] = None,
+        path_col: Optional[str] = None,
     ):
+        if not isinstance(data, pd.DataFrame):
+            raise TypeError("data must be a pandas DataFrame")
         self.data = data.copy()
         self.conversion_col = conversion_col
         self.user_col = user_col
-        self.touchpoint_cols = touchpoint_cols or self._detect_touchpoints()
+        self.covariate_cols = list(covariate_cols or [])
+        self.path_col = path_col
         self.random_state = random_state
-        
-        if random_state is not None:
-            np.random.seed(random_state)
-        
-        # Validate
+        self._rng = np.random.default_rng(random_state)
+
+        if conversion_col not in self.data.columns:
+            raise ValueError(f"Conversion column '{conversion_col}' not found")
+        for col in self.covariate_cols + ([path_col] if path_col else []):
+            if col not in self.data.columns:
+                raise ValueError(f"Column '{col}' not found")
+
+        self._paths: Optional[List[List[str]]] = None
+        if path_col is not None:
+            self._paths = [self._parse_path(p) for p in self.data[path_col]]
+
+        if touchpoint_cols is None:
+            touchpoint_cols = self._detect_touchpoints()
+        self.touchpoint_cols = list(touchpoint_cols)
         self._validate_inputs()
-        
-        # Fitted components
-        self._attribution = None
-        self._method = None
+
+        self._attribution: Optional[Dict[str, float]] = None
+        self._contributions: Optional[Dict[str, float]] = None
+        self._baseline: Optional[float] = None
+        self._method: Optional[str] = None
         self._model = None
-        self._incremental_effects = None
-    
+        self._interactions = False
+        self._incremental_effects: Optional[Dict[str, float]] = None
+
+    # ------------------------------------------------------------------
+    # Input handling
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_path(value) -> List[str]:
+        if isinstance(value, str):
+            return [p.strip() for p in value.split('>') if p.strip()]
+        if value is None or (np.isscalar(value) and pd.isna(value)):
+            return []
+        return [str(p) for p in value]
+
     def _detect_touchpoints(self) -> List[str]:
-        """Auto-detect touchpoint columns."""
-        exclude = {self.conversion_col, self.user_col}
-        binary_cols = []
+        """Channels named in the paths, or else the 0/1 columns."""
+        if self._paths is not None:
+            channels = sorted({c for path in self._paths for c in path})
+            for c in channels:
+                if c not in self.data.columns:
+                    self.data[c] = [int(c in path) for path in self._paths]
+            return channels
+        exclude = {self.conversion_col, self.user_col, self.path_col, *self.covariate_cols}
+        found = []
         for col in self.data.columns:
-            if col not in exclude:
-                unique = self.data[col].nunique()
-                if unique == 2 or (unique <= 10 and self.data[col].dtype in ['int64', 'float64']):
-                    binary_cols.append(col)
-        return binary_cols
-    
+            if col in exclude or not pd.api.types.is_numeric_dtype(self.data[col]):
+                continue
+            values = set(pd.unique(self.data[col].dropna()))
+            if values and values <= {0, 1}:
+                found.append(col)
+        return found
+
     def _validate_inputs(self):
-        """Validate input data."""
-        if self.conversion_col not in self.data.columns:
-            raise ValueError(f"Conversion column '{self.conversion_col}' not found")
-        
+        if not self.touchpoint_cols:
+            raise ValueError("No touchpoint columns given or detected")
         for col in self.touchpoint_cols:
             if col not in self.data.columns:
                 raise ValueError(f"Touchpoint column '{col}' not found")
-    
-    def fit(
+            if not pd.api.types.is_numeric_dtype(self.data[col]):
+                raise ValueError(f"Touchpoint column '{col}' must be numeric")
+        if len(set(self.touchpoint_cols)) != len(self.touchpoint_cols):
+            raise ValueError("touchpoint_cols contains duplicates")
+        if not pd.api.types.is_numeric_dtype(self.data[self.conversion_col]):
+            raise ValueError(f"Conversion column '{self.conversion_col}' must be numeric")
+        if self.data[self.conversion_col].isna().any():
+            raise ValueError(f"Conversion column '{self.conversion_col}' has missing values")
+        for col in self.covariate_cols:
+            if not pd.api.types.is_numeric_dtype(self.data[col]):
+                raise ValueError(
+                    f"Covariate '{col}' must be numeric. Encode categories first, "
+                    "for example with pd.get_dummies."
+                )
+            if self.data[col].isna().any():
+                raise ValueError(f"Covariate '{col}' has missing values")
+        if self._paths is not None:
+            unknown = sorted({c for p in self._paths for c in p} - set(self.touchpoint_cols))
+            if unknown:
+                raise ValueError(f"Paths name channels that are not touchpoints: {unknown}")
+        if len(self.data) < 2:
+            raise ValueError("Need at least two rows")
+
+    def _exposure(self, data: pd.DataFrame) -> np.ndarray:
+        return (data[self.touchpoint_cols].to_numpy(dtype=float) > 0).astype(float)
+
+    def _covariates(self, data: pd.DataFrame) -> Optional[np.ndarray]:
+        if not self.covariate_cols:
+            return None
+        return data[self.covariate_cols].to_numpy(dtype=float)
+
+    # ------------------------------------------------------------------
+    # Outcome model
+    # ------------------------------------------------------------------
+
+    def _design(self, E: np.ndarray, C: Optional[np.ndarray], interactions: bool) -> np.ndarray:
+        blocks = [E]
+        if interactions and E.shape[1] > 1:
+            blocks.append(np.column_stack(
+                [E[:, i] * E[:, j] for i, j in combinations(range(E.shape[1]), 2)]
+            ))
+        if C is not None:
+            blocks.append(C)
+        return np.hstack(blocks)
+
+    def _fit_outcome_model(
         self,
-        method: str = 'shapley',
-        **kwargs
-    ) -> 'MarketingAttribution':
+        data: pd.DataFrame,
+        interactions: bool = False,
+        force_linear: bool = False,
+    ) -> Callable[[np.ndarray, Optional[np.ndarray]], np.ndarray]:
+        """Fit conversion on exposure (and covariates). Returns ``predict(E, C)``."""
+        E = self._exposure(data)
+        C = self._covariates(data)
+        y = data[self.conversion_col].to_numpy(dtype=float)
+        if C is not None:
+            mu, sd = C.mean(axis=0), C.std(axis=0)
+            sd[sd == 0] = 1.0
+
+            def scale(c):
+                return (c - mu) / sd
+        else:
+            def scale(c):
+                return None
+        X = self._design(E, scale(C), interactions)
+        binary = set(np.unique(y)) <= {0.0, 1.0}
+
+        if len(np.unique(y)) == 1:
+            constant = float(y[0])
+            return lambda e, c: np.full(len(e), constant)
+
+        if binary and not force_linear:
+            from sklearn.linear_model import LogisticRegression
+            model = LogisticRegression(C=1e6, max_iter=2000)
+            model.fit(X, y.astype(int))
+            return lambda e, c: model.predict_proba(
+                self._design(e, scale(c), interactions))[:, 1]
+
+        A = np.column_stack([np.ones(len(X)), X])
+        beta, *_ = np.linalg.lstsq(A, y, rcond=None)
+
+        def predict(e, c):
+            Z = self._design(e, scale(c), interactions)
+            return beta[0] + Z @ beta[1:]
+        predict.coef_ = beta[1:1 + E.shape[1]]
+        return predict
+
+    def _effects_from(self, predict, E: np.ndarray, C: Optional[np.ndarray]) -> np.ndarray:
+        """Average effect of an exposure to each channel, others as observed."""
+        out = np.zeros(E.shape[1])
+        for i in range(E.shape[1]):
+            on, off = E.copy(), E.copy()
+            on[:, i], off[:, i] = 1.0, 0.0
+            out[i] = float(np.mean(predict(on, C) - predict(off, C)))
+        return out
+
+    # ------------------------------------------------------------------
+    # Fitting
+    # ------------------------------------------------------------------
+
+    def fit(self, method: str = 'shapley', **kwargs) -> 'MarketingAttribution':
         """
-        Fit attribution model.
-        
+        Fit an attribution method.
+
         Parameters
         ----------
         method : str
-            Attribution method:
-            - 'shapley': Causal Shapley values
-            - 'logistic': Logistic regression coefficients
-            - 'uplift': Uplift-based attribution
-            - 'markov': Markov chain attribution
-            - 'linear': Linear regression
-            
+            Incremental methods, which credit only what a channel added:
+
+            - 'shapley': Shapley values of the modelled conversion rate. Each
+              channel's credit is its average marginal contribution over every
+              order in which channels could be switched on.
+            - 'logistic': removal effect. The modelled conversions lost if that
+              one channel were switched off.
+            - 'linear': linear probability model, coefficient times exposure rate.
+            - 'uplift': the effect of one exposure, ignoring how many users the
+              channel reaches. Ranks channels by effectiveness, not by volume.
+
+            Path heuristics, which describe journeys and are not causal:
+
+            - 'markov': first-order Markov chain removal effect.
+            - 'last_touch', 'first_touch'.
+        interactions : bool, default False
+            Incremental methods only. Add pairwise channel interactions to the
+            outcome model, so that channels can reinforce or cannibalise each other.
+        n_samples : int, default 1000
+            Shapley only. Permutations sampled when there are more than 8
+            channels; with 8 or fewer the values are computed exactly.
+        exact : bool, optional
+            Shapley only. Force exact or sampled computation.
+
         Returns
         -------
         self
@@ -132,325 +312,296 @@ class MarketingAttribution:
             'last_touch': self._fit_last_touch,
             'first_touch': self._fit_first_touch,
         }
-        
-        if method.lower() not in methods:
-            raise ValueError(f"Unknown method: {method}")
-        
-        self._method = method.lower()
-        methods[self._method](**kwargs)
-        
+        key = str(method).lower()
+        if key not in methods:
+            raise ValueError(f"Unknown method: {method}. Choose from {sorted(methods)}")
+
+        self._method = key
+        self._contributions = None
+        self._baseline = None
+        if key in INCREMENTAL_METHODS:
+            self._interactions = bool(kwargs.pop('interactions', False))
+            self._incremental_effects = None
+        methods[key](**kwargs)
         return self
-    
-    def _fit_shapley(self, n_samples: int = 1000, **kwargs):
-        """
-        Compute Shapley values for attribution.
-        
-        Uses cooperative game theory to fairly distribute credit.
-        """
-        n_touchpoints = len(self.touchpoint_cols)
-        n_data = len(self.data)
-        
-        # Compute characteristic function for all coalitions
-        def v(coalition: set) -> float:
-            """Value function: conversion rate with these touchpoints."""
-            if not coalition:
-                return 0.0
-            
-            mask = np.ones(n_data, dtype=bool)
-            for tp in coalition:
-                mask &= (self.data[tp] > 0)
-            
-            if mask.sum() == 0:
-                return 0.0
-            
-            return self.data.loc[mask, self.conversion_col].mean()
-        
-        # Monte Carlo Shapley approximation
-        shapley_values = {tp: 0.0 for tp in self.touchpoint_cols}
-        
-        for _ in range(n_samples):
-            # Random permutation
-            perm = np.random.permutation(self.touchpoint_cols)
-            
-            coalition = set()
-            prev_value = 0.0
-            
-            for tp in perm:
-                coalition.add(tp)
-                curr_value = v(coalition)
-                
-                # Marginal contribution
-                shapley_values[tp] += (curr_value - prev_value) / n_samples
-                prev_value = curr_value
-        
-        # Clip negative contributions (attribution credit is non-negative,
-        # consistent with the uplift method), then normalize to sum to 1.
-        # Guard against a degenerate near-zero total, which previously
-        # caused catastrophic blow-up when dividing.
-        clipped = {k: max(0.0, val) for k, val in shapley_values.items()}
-        total = sum(clipped.values())
-        if total > 1e-12:
-            shapley_values = {k: val / total for k, val in clipped.items()}
+
+    def _set_incremental(self, contributions: np.ndarray, baseline: float) -> None:
+        self._contributions = dict(zip(self.touchpoint_cols, map(float, contributions)))
+        self._baseline = float(baseline)
+        self._attribution = self._shares(self._contributions)
+
+    def _shares(self, contributions: Dict[str, float]) -> Dict[str, float]:
+        """Shares of the positive contributions. Negative ones get no credit."""
+        positive = {k: max(0.0, v) for k, v in contributions.items()}
+        total = sum(positive.values())
+        if total <= 1e-12:
+            warnings.warn(
+                "No channel shows a positive contribution, so there is nothing to "
+                "attribute. All shares are zero.",
+                UserWarning, stacklevel=5
+            )
+            return {k: 0.0 for k in contributions}
+        negative = -sum(min(0.0, v) for v in contributions.values())
+        if negative > 0.1 * total:
+            harmful = sorted(k for k, v in contributions.items() if v < 0)
+            warnings.warn(
+                f"These channels have a negative contribution and receive no share: "
+                f"{harmful}. See get_contributions() for the signed values.",
+                UserWarning, stacklevel=5
+            )
+        return {k: v / total for k, v in positive.items()}
+
+    def _coalition_value(self, predict, E, C) -> Callable[[FrozenSet[int]], float]:
+        """v(S): modelled conversion rate if only the channels in S had run."""
+        cache: Dict[FrozenSet[int], float] = {}
+
+        def v(S: FrozenSet[int]) -> float:
+            if S not in cache:
+                mask = np.zeros(E.shape[1])
+                mask[list(S)] = 1.0
+                cache[S] = float(np.mean(predict(E * mask, C)))
+            return cache[S]
+        return v
+
+    def _fit_shapley(self, n_samples: int = 1000, exact: Optional[bool] = None, **kwargs):
+        E, C = self._exposure(self.data), self._covariates(self.data)
+        predict = self._fit_outcome_model(self.data, self._interactions)
+        self._model = predict
+        v = self._coalition_value(predict, E, C)
+        k = E.shape[1]
+        if exact is None:
+            exact = k <= _EXACT_SHAPLEY_MAX
+
+        phi = np.zeros(k)
+        if exact:
+            for i in range(k):
+                others = [j for j in range(k) if j != i]
+                for size in range(k):
+                    weight = factorial(size) * factorial(k - size - 1) / factorial(k)
+                    for subset in combinations(others, size):
+                        S = frozenset(subset)
+                        phi[i] += weight * (v(S | {i}) - v(S))
         else:
-            # No positive contributions detected - fall back to uniform
-            n = len(self.touchpoint_cols)
-            shapley_values = {k: 1.0 / n for k in self.touchpoint_cols}
-        
-        self._attribution = shapley_values
-        self._incremental_effects = self._compute_incremental_effects()
-    
+            if n_samples < 1:
+                raise ValueError("n_samples must be at least 1")
+            for _ in range(n_samples):
+                S: FrozenSet[int] = frozenset()
+                previous = v(S)
+                for i in self._rng.permutation(k):
+                    S = S | {int(i)}
+                    current = v(S)
+                    phi[i] += (current - previous) / n_samples
+                    previous = current
+        self._set_incremental(phi, v(frozenset()))
+
     def _fit_logistic(self, **kwargs):
-        """Logistic regression-based attribution."""
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.preprocessing import StandardScaler
-        
-        X = self.data[self.touchpoint_cols].values
-        y = self.data[self.conversion_col].values
-        
-        # Scale features
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        
-        # Fit logistic regression
-        model = LogisticRegression(random_state=self.random_state)
-        model.fit(X_scaled, y)
-        
-        self._model = model
-        
-        # Convert coefficients to attribution weights
-        coefs = np.abs(model.coef_[0])
-        total = coefs.sum()
-        
-        if total > 0:
-            weights = coefs / total
-        else:
-            weights = np.ones(len(self.touchpoint_cols)) / len(self.touchpoint_cols)
-        
-        self._attribution = dict(zip(self.touchpoint_cols, weights))
-        self._incremental_effects = self._compute_incremental_effects()
-    
+        E, C = self._exposure(self.data), self._covariates(self.data)
+        predict = self._fit_outcome_model(self.data, self._interactions)
+        self._model = predict
+        v = self._coalition_value(predict, E, C)
+        k = E.shape[1]
+        everything = frozenset(range(k))
+        removal = np.array([v(everything) - v(everything - {i}) for i in range(k)])
+        self._set_incremental(removal, v(frozenset()))
+
+    def _fit_linear(self, **kwargs):
+        E, C = self._exposure(self.data), self._covariates(self.data)
+        predict = self._fit_outcome_model(self.data, self._interactions, force_linear=True)
+        self._model = predict
+        v = self._coalition_value(predict, E, C)
+        k = E.shape[1]
+        everything = frozenset(range(k))
+        removal = np.array([v(everything) - v(everything - {i}) for i in range(k)])
+        self._set_incremental(removal, v(frozenset()))
+
     def _fit_uplift(self, **kwargs):
-        """Uplift-based attribution."""
-        attribution = {}
-        
-        for tp in self.touchpoint_cols:
-            # Treatment: exposed to touchpoint
-            treated = self.data[self.data[tp] > 0]
-            control = self.data[self.data[tp] == 0]
-            
-            if len(treated) > 0 and len(control) > 0:
-                uplift = treated[self.conversion_col].mean() - control[self.conversion_col].mean()
-                attribution[tp] = max(0, uplift)  # Only positive uplift
-            else:
-                attribution[tp] = 0.0
-        
-        # Normalize
-        total = sum(attribution.values())
-        if total > 0:
-            attribution = {k: v / total for k, v in attribution.items()}
-        
-        self._attribution = attribution
-        self._incremental_effects = self._compute_incremental_effects()
-    
+        E, C = self._exposure(self.data), self._covariates(self.data)
+        predict = self._fit_outcome_model(self.data, self._interactions)
+        self._model = predict
+        effects = self._effects_from(predict, E, C)
+        self._set_incremental(effects, float(np.mean(predict(np.zeros_like(E), C))))
+
+    # ------------------------------------------------------------------
+    # Path heuristics
+    # ------------------------------------------------------------------
+
+    def _journeys(self) -> List[List[str]]:
+        if self._paths is not None:
+            return self._paths
+        warnings.warn(
+            "No path_col was given, so the order of touchpoint_cols "
+            f"{self.touchpoint_cols} is taken as the order of contact. Pass "
+            "path_col for the real order.",
+            UserWarning, stacklevel=4
+        )
+        E = self._exposure(self.data)
+        return [[c for c, on in zip(self.touchpoint_cols, row) if on] for row in E]
+
+    def _set_heuristic(self, credit: Dict[str, float]) -> None:
+        total = sum(credit.values())
+        if total <= 0:
+            warnings.warn("No conversions to attribute. All shares are zero.",
+                          UserWarning, stacklevel=4)
+            self._attribution = {k: 0.0 for k in credit}
+        else:
+            self._attribution = {k: v / total for k, v in credit.items()}
+
     def _fit_markov(self, **kwargs):
         """
-        Markov chain attribution.
-        
-        Models customer journey as Markov chain and computes
-        removal effects for each channel.
+        First-order Markov chain attribution.
+
+        Journeys are modelled as a chain ``start -> channels -> conversion or
+        no conversion``. A channel's removal effect is the share of conversions
+        lost when every visit to it is sent to no conversion instead. Shares are
+        the removal effects scaled to sum to one.
         """
-        # Build transition matrix
-        touchpoints = self.touchpoint_cols + ['conversion', 'null']
-        n_states = len(touchpoints)
-        state_idx = {s: i for i, s in enumerate(touchpoints)}
-        
-        transitions = np.zeros((n_states, n_states))
-        
-        # Count transitions from data
-        for _, row in self.data.iterrows():
-            journey = []
-            for tp in self.touchpoint_cols:
-                if row[tp] > 0:
-                    journey.append(tp)
-            
-            if row[self.conversion_col] > 0:
-                journey.append('conversion')
-            else:
-                journey.append('null')
-            
-            # Add transitions
-            for i in range(len(journey) - 1):
-                from_state = journey[i]
-                to_state = journey[i + 1]
-                transitions[state_idx[from_state], state_idx[to_state]] += 1
-        
-        # Normalize to probabilities
-        row_sums = transitions.sum(axis=1, keepdims=True)
-        row_sums[row_sums == 0] = 1  # Avoid division by zero
-        trans_probs = transitions / row_sums
-        
-        # Compute baseline conversion probability
-        baseline_conv = self._markov_conversion_prob(trans_probs, state_idx)
-        
-        # Compute removal effect for each channel
-        removal_effects = {}
-        for tp in self.touchpoint_cols:
-            # Remove channel (set its transitions to null)
-            modified = trans_probs.copy()
-            tp_idx = state_idx[tp]
-            
-            # Redirect all traffic through this channel to null
-            modified[:, tp_idx] = 0
-            modified[tp_idx, :] = 0
-            modified[tp_idx, state_idx['null']] = 1
-            
-            # Renormalize
-            row_sums = modified.sum(axis=1, keepdims=True)
-            row_sums[row_sums == 0] = 1
-            modified = modified / row_sums
-            
-            modified_conv = self._markov_conversion_prob(modified, state_idx)
-            removal_effects[tp] = max(0, baseline_conv - modified_conv)
-        
-        # Normalize
-        total = sum(removal_effects.values())
-        if total > 0:
-            attribution = {k: v / total for k, v in removal_effects.items()}
-        else:
-            attribution = {k: 1/len(self.touchpoint_cols) for k in self.touchpoint_cols}
-        
-        self._attribution = attribution
-        self._incremental_effects = self._compute_incremental_effects()
-    
-    def _markov_conversion_prob(
-        self,
-        trans_probs: np.ndarray,
-        state_idx: Dict[str, int]
-    ) -> float:
-        """Compute conversion probability from Markov chain."""
-        n_states = trans_probs.shape[0]
-        conv_idx = state_idx['conversion']
-        null_idx = state_idx['null']
-        
-        # Start from equal distribution over touchpoints
-        start_dist = np.zeros(n_states)
-        for tp in self.touchpoint_cols:
-            start_dist[state_idx[tp]] = 1.0 / len(self.touchpoint_cols)
-        
-        # Run chain until convergence
-        state = start_dist.copy()
-        for _ in range(100):
-            state = state @ trans_probs
-        
-        return state[conv_idx]
-    
-    def _fit_linear(self, **kwargs):
-        """Linear regression attribution."""
-        from sklearn.linear_model import LinearRegression
-        
-        X = self.data[self.touchpoint_cols].values
-        y = self.data[self.conversion_col].values
-        
-        model = LinearRegression()
-        model.fit(X, y)
-        
-        self._model = model
-        
-        # Use absolute coefficients
-        coefs = np.abs(model.coef_)
-        total = coefs.sum()
-        
-        if total > 0:
-            weights = coefs / total
-        else:
-            weights = np.ones(len(self.touchpoint_cols)) / len(self.touchpoint_cols)
-        
-        self._attribution = dict(zip(self.touchpoint_cols, weights))
-        self._incremental_effects = self._compute_incremental_effects()
-    
+        journeys = self._journeys()
+        converted = self.data[self.conversion_col].to_numpy(dtype=float)
+        k = len(self.touchpoint_cols)
+        index = {c: i + 1 for i, c in enumerate(self.touchpoint_cols)}   # 0 is start
+        counts = np.zeros((k + 1, k + 1))
+        to_conversion = np.zeros(k + 1)
+        visits = np.zeros(k + 1)
+
+        for path, value in zip(journeys, converted):
+            state = 0
+            for channel in path:
+                nxt = index[channel]
+                counts[state, nxt] += 1
+                visits[state] += 1
+                state = nxt
+            visits[state] += 1
+            to_conversion[state] += value
+
+        visits[visits == 0] = 1.0
+        Q = counts / visits[:, None]
+        R = to_conversion / visits
+
+        def conversion_rate(Q_: np.ndarray, R_: np.ndarray) -> float:
+            return float(np.linalg.lstsq(np.eye(k + 1) - Q_, R_, rcond=None)[0][0])
+
+        base = conversion_rate(Q, R)
+        self._markov_conversion_rate = base
+        removal = {}
+        for channel, i in index.items():
+            Q_removed, R_removed = Q.copy(), R.copy()
+            Q_removed[:, i] = 0.0          # visits to the channel are lost
+            Q_removed[i, :] = 0.0
+            R_removed[i] = 0.0
+            removal[channel] = max(0.0, 1.0 - conversion_rate(Q_removed, R_removed) / base) \
+                if base > 0 else 0.0
+        self._removal_effects = removal
+        self._set_heuristic(removal)
+
     def _fit_last_touch(self, **kwargs):
-        """Last-touch attribution (baseline)."""
-        attribution = {tp: 0.0 for tp in self.touchpoint_cols}
-        
-        # For each conversion, credit the last touchpoint
-        conversions = self.data[self.data[self.conversion_col] > 0]
-        
-        for _, row in conversions.iterrows():
-            # Find last touchpoint (rightmost in list)
-            for tp in reversed(self.touchpoint_cols):
-                if row[tp] > 0:
-                    attribution[tp] += 1
-                    break
-        
-        # Normalize
-        total = sum(attribution.values())
-        if total > 0:
-            attribution = {k: v / total for k, v in attribution.items()}
-        
-        self._attribution = attribution
-        self._incremental_effects = self._compute_incremental_effects()
-    
+        """All credit for a conversion to the last channel of the journey."""
+        self._touch(-1)
+
     def _fit_first_touch(self, **kwargs):
-        """First-touch attribution (baseline)."""
-        attribution = {tp: 0.0 for tp in self.touchpoint_cols}
-        
-        # For each conversion, credit the first touchpoint
-        conversions = self.data[self.data[self.conversion_col] > 0]
-        
-        for _, row in conversions.iterrows():
-            # Find first touchpoint
-            for tp in self.touchpoint_cols:
-                if row[tp] > 0:
-                    attribution[tp] += 1
-                    break
-        
-        # Normalize
-        total = sum(attribution.values())
-        if total > 0:
-            attribution = {k: v / total for k, v in attribution.items()}
-        
-        self._attribution = attribution
-        self._incremental_effects = self._compute_incremental_effects()
-    
-    def _compute_incremental_effects(self) -> Dict[str, float]:
-        """Compute incremental effect of each touchpoint."""
-        effects = {}
-        
-        for tp in self.touchpoint_cols:
-            treated = self.data[self.data[tp] > 0][self.conversion_col].mean()
-            control = self.data[self.data[tp] == 0][self.conversion_col].mean()
-            effects[tp] = treated - control if not np.isnan(treated - control) else 0.0
-        
-        return effects
-    
-    def get_attribution(self) -> Dict[str, float]:
-        """
-        Get attribution weights.
-        
-        Returns
-        -------
-        dict
-            Attribution weights for each touchpoint (sum to 1)
-        """
+        """All credit for a conversion to the first channel of the journey."""
+        self._touch(0)
+
+    def _touch(self, position: int) -> None:
+        journeys = self._journeys()
+        converted = self.data[self.conversion_col].to_numpy(dtype=float)
+        credit = {c: 0.0 for c in self.touchpoint_cols}
+        for path, value in zip(journeys, converted):
+            if path and value > 0:
+                credit[path[position]] += float(value)
+        self._set_heuristic(credit)
+
+    # ------------------------------------------------------------------
+    # Results
+    # ------------------------------------------------------------------
+
+    def _require_fit(self) -> None:
         if self._attribution is None:
             raise RuntimeError("Must call fit() first")
-        
+
+    def get_attribution(self) -> Dict[str, float]:
+        """
+        Attribution shares.
+
+        For the incremental methods these are shares of the conversions that
+        marketing added; conversions that would have happened anyway are left
+        out, and a channel with a negative contribution gets zero. The shares
+        sum to one unless no channel has a positive contribution, in which case
+        they are all zero.
+        """
+        self._require_fit()
         return self._attribution.copy()
-    
+
+    def get_contributions(self) -> Dict[str, float]:
+        """
+        Signed contribution of each channel, in units of the conversion column
+        per user (for a 0/1 column, conversion-rate points). Incremental methods
+        only. For 'shapley' these sum to the modelled conversion rate minus the
+        baseline. For 'uplift' they are per-exposure effects.
+        """
+        self._require_fit()
+        if self._contributions is None:
+            raise RuntimeError(
+                f"'{self._method}' is a path heuristic and does not estimate "
+                f"contributions. Use one of {INCREMENTAL_METHODS}."
+            )
+        return self._contributions.copy()
+
+    def get_baseline(self) -> float:
+        """Modelled conversion rate with no marketing exposure. Incremental
+        methods only."""
+        self._require_fit()
+        if self._baseline is None:
+            raise RuntimeError(
+                f"'{self._method}' is a path heuristic and does not estimate a baseline."
+            )
+        return self._baseline
+
     def get_incremental_effects(self) -> Dict[str, float]:
         """
-        Get incremental effects of each touchpoint.
-        
-        Returns
-        -------
-        dict
-            Incremental conversion lift per touchpoint
+        Effect of an exposure to each channel on the conversion column: the
+        average difference between exposed and not exposed, with the other
+        channels as observed and adjusted for the other channels and the
+        covariates. Does not depend on the attribution method chosen.
         """
+        self._require_fit()
         if self._incremental_effects is None:
-            raise RuntimeError("Must call fit() first")
-        
+            predict = self._fit_outcome_model(self.data, self._interactions)
+            effects = self._effects_from(
+                predict, self._exposure(self.data), self._covariates(self.data))
+            self._incremental_effects = dict(zip(self.touchpoint_cols, map(float, effects)))
         return self._incremental_effects.copy()
-    
+
+    def incremental_effects_table(
+        self,
+        n_bootstrap: int = 200,
+        alpha: float = 0.05,
+        interactions: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Incremental effects with bootstrap confidence intervals.
+
+        Returns one row per channel: ``effect``, ``ci_lower``, ``ci_upper``
+        (percentile interval at level ``1 - alpha``) and ``exposure_rate``.
+        """
+        if n_bootstrap < 2:
+            raise ValueError("n_bootstrap must be at least 2")
+        E, C = self._exposure(self.data), self._covariates(self.data)
+        point = self._effects_from(self._fit_outcome_model(self.data, interactions), E, C)
+        draws = np.empty((n_bootstrap, len(self.touchpoint_cols)))
+        n = len(self.data)
+        for b in range(n_bootstrap):
+            sample = self.data.iloc[self._rng.integers(0, n, n)]
+            predict = self._fit_outcome_model(sample, interactions)
+            draws[b] = self._effects_from(
+                predict, self._exposure(sample), self._covariates(sample))
+        lower, upper = np.quantile(draws, [alpha / 2, 1 - alpha / 2], axis=0)
+        return pd.DataFrame({
+            'effect': point,
+            'ci_lower': lower,
+            'ci_upper': upper,
+            'exposure_rate': E.mean(axis=0),
+        }, index=self.touchpoint_cols)
+
     def optimize_budget(
         self,
         total_budget: float,
@@ -458,119 +609,147 @@ class MarketingAttribution:
         constraints: Optional[Dict[str, Tuple[float, float]]] = None
     ) -> Dict[str, float]:
         """
-        Optimize budget allocation across touchpoints.
-        
+        Split a budget across channels in proportion to attribution per unit cost.
+
+        This is a rule of thumb, not an optimum. Exposure flags carry no
+        information about diminishing returns, so the data cannot say how a
+        channel would respond to more spend; a response-curve model is needed
+        for that (see ``pycausalsim.futures``).
+
         Parameters
         ----------
         total_budget : float
-            Total budget to allocate
+            Budget to allocate. The allocation always sums to it.
         cost_per_touchpoint : dict, optional
-            Cost per unit for each touchpoint
+            Cost of one exposure per channel. Equal costs when omitted.
         constraints : dict, optional
-            Min/max constraints: {touchpoint: (min, max)}
-            
+            ``{channel: (min, max)}`` spend limits. Budget freed or taken by a
+            limit is redistributed across the remaining channels.
+
         Returns
         -------
         dict
-            Optimal budget allocation
+            Budget per channel.
         """
-        if self._attribution is None:
-            raise RuntimeError("Must call fit() first")
-        
-        # Default: equal costs
-        if cost_per_touchpoint is None:
-            cost_per_touchpoint = {tp: 1.0 for tp in self.touchpoint_cols}
-        
-        # Simple allocation proportional to attribution
-        allocation = {}
-        
-        # Adjust for cost efficiency
-        efficiency = {}
-        for tp in self.touchpoint_cols:
-            efficiency[tp] = self._attribution.get(tp, 0) / cost_per_touchpoint.get(tp, 1)
-        
-        total_efficiency = sum(efficiency.values())
-        
-        if total_efficiency > 0:
-            for tp in self.touchpoint_cols:
-                allocation[tp] = total_budget * efficiency[tp] / total_efficiency
-        else:
-            # Equal allocation
-            per_tp = total_budget / len(self.touchpoint_cols)
-            allocation = {tp: per_tp for tp in self.touchpoint_cols}
-        
-        # Apply constraints
-        if constraints:
-            for tp, (min_val, max_val) in constraints.items():
-                if tp in allocation:
-                    allocation[tp] = np.clip(allocation[tp], min_val, max_val)
-        
-        return allocation
-    
-    def compare_methods(self) -> pd.DataFrame:
+        self._require_fit()
+        if total_budget < 0:
+            raise ValueError("total_budget must not be negative")
+        channels = self.touchpoint_cols
+        costs = dict(cost_per_touchpoint or {})
+        limits = dict(constraints or {})
+        unknown = sorted((set(costs) | set(limits)) - set(channels))
+        if unknown:
+            raise ValueError(f"Unknown channels: {unknown}")
+        if any(c <= 0 for c in costs.values()):
+            raise ValueError("Costs must be positive")
+        low = {c: float(limits.get(c, (0.0, np.inf))[0]) for c in channels}
+        high = {c: float(limits.get(c, (0.0, np.inf))[1]) for c in channels}
+        if any(low[c] > high[c] or low[c] < 0 for c in channels):
+            raise ValueError("Each constraint must satisfy 0 <= min <= max")
+        if sum(low.values()) > total_budget + 1e-9 or sum(high.values()) < total_budget - 1e-9:
+            raise ValueError("The constraints cannot be met with this total budget")
+
+        weight = {c: self._attribution.get(c, 0.0) / costs.get(c, 1.0) for c in channels}
+        if sum(weight.values()) <= 0:
+            warnings.warn("No channel has a positive share; splitting the budget equally.",
+                          UserWarning, stacklevel=2)
+            weight = {c: 1.0 for c in channels}
+
+        allocation: Dict[str, float] = {}
+        free = list(channels)
+        remaining = float(total_budget)
+        while free:
+            total_weight = sum(weight[c] for c in free)
+            if total_weight > 0:
+                proposal = {c: remaining * weight[c] / total_weight for c in free}
+            else:
+                proposal = {c: remaining / len(free) for c in free}
+            below = [c for c in free if proposal[c] < low[c] - 1e-12]
+            above = [c for c in free if proposal[c] > high[c] + 1e-12]
+            if not below and not above:
+                allocation.update(proposal)
+                break
+            # Fix the limits that are violated in the direction of the overall
+            # imbalance, then share what is left among the rest.
+            fix_low = sum(low[c] - proposal[c] for c in below)
+            fix_high = sum(proposal[c] - high[c] for c in above)
+            fixed = below if fix_low >= fix_high else above
+            for c in fixed:
+                allocation[c] = low[c] if fixed is below else high[c]
+                remaining -= allocation[c]
+                free.remove(c)
+        return {c: float(allocation[c]) for c in channels}
+
+    def compare_methods(self, methods: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
         """
-        Compare attribution across different methods.
-        
-        Returns
-        -------
-        pd.DataFrame
-            Comparison of attribution weights by method
+        Attribution shares from several methods side by side.
+
+        The incremental methods and the path heuristics answer different
+        questions, so disagreement between the two groups is expected. The
+        fitted state of the object is left as it was.
         """
-        methods = ['shapley', 'logistic', 'uplift', 'markov', 'last_touch', 'first_touch']
+        methods = list(methods or INCREMENTAL_METHODS + PATH_METHODS)
+        saved = {name: getattr(self, name) for name in (
+            '_attribution', '_contributions', '_baseline', '_method', '_model',
+            '_interactions', '_incremental_effects')}
         results = {}
-        
-        for method in methods:
-            try:
-                self.fit(method=method)
-                results[method] = self._attribution.copy()
-            except Exception as e:
-                warnings.warn(f"Method {method} failed: {e}")
-        
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', message='No path_col was given')
+                for method in methods:
+                    self.fit(method=method, **kwargs)
+                    results[method] = self._attribution.copy()
+        finally:
+            for name, value in saved.items():
+                setattr(self, name, value)
+        if self._paths is None and any(m in PATH_METHODS for m in methods):
+            warnings.warn(
+                "No path_col was given, so the path heuristics took the order of "
+                "touchpoint_cols as the order of contact.",
+                UserWarning, stacklevel=2
+            )
         return pd.DataFrame(results)
-    
+
     def plot_attribution(self, ax=None):
-        """Plot attribution weights."""
+        """Plot attribution shares."""
         import matplotlib.pyplot as plt
-        
-        if self._attribution is None:
-            raise RuntimeError("Must call fit() first")
-        
+
+        self._require_fit()
         if ax is None:
             fig, ax = plt.subplots(figsize=(10, 6))
-        
+
         touchpoints = list(self._attribution.keys())
         weights = list(self._attribution.values())
-        
         colors = plt.cm.viridis(np.linspace(0, 0.8, len(touchpoints)))
         ax.barh(touchpoints, weights, color=colors)
-        ax.set_xlabel('Attribution Weight')
+        ax.set_xlabel('Attribution share')
         ax.set_title(f'Marketing Attribution ({self._method})')
-        
         return ax
-    
+
     def summary(self) -> str:
         """Return attribution summary."""
         if self._attribution is None:
             return "Attribution not fitted. Call fit() first."
-        
+
+        rate = self.data[self.conversion_col].mean()
         lines = [
             "Marketing Attribution Summary",
             "=" * 50,
             f"Method: {self._method}",
             f"Touchpoints: {len(self.touchpoint_cols)}",
             f"Total records: {len(self.data)}",
-            f"Conversion rate: {self.data[self.conversion_col].mean():.2%}",
-            "",
-            "Attribution Weights:",
+            f"Mean of {self.conversion_col}: {rate:.4f}",
         ]
-        
-        sorted_attr = sorted(self._attribution.items(), key=lambda x: x[1], reverse=True)
-        for tp, weight in sorted_attr:
-            inc_effect = self._incremental_effects.get(tp, 0)
-            lines.append(f"  {tp}: {weight:.1%} (incremental: {inc_effect:+.2%})")
-        
+        if self._baseline is not None:
+            lines.append(f"Without any touchpoint (modelled): {self._baseline:.4f}")
+        else:
+            lines.append("Path heuristic: describes journeys, not what a channel caused.")
+        lines += ["", "Attribution shares:"]
+        effects = self.get_incremental_effects()
+        for tp, weight in sorted(self._attribution.items(), key=lambda x: x[1], reverse=True):
+            lines.append(f"  {tp}: {weight:.1%} (effect of an exposure: {effects[tp]:+.4f})")
         return "\n".join(lines)
-    
+
     def __repr__(self) -> str:
-        status = "fitted" if self._attribution else "unfitted"
+        status = "fitted" if self._attribution is not None else "unfitted"
         return f"MarketingAttribution(touchpoints={len(self.touchpoint_cols)}, {status})"
