@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Changed: causal discovery rewritten and tested against known graphs
+- **PC** oriented every unshielded triple as a collider and guessed remaining
+  directions from variances, so chains and forks came back as colliders. It is now
+  PC-stable with separating sets, collider orientation and Meek's rules.
+- **GES** returned every edge in both directions, with spurious edges. It is now
+  greedy equivalence search (Chickering, 2002) with the BIC score.
+- **LiNGAM** followed column order. It is now DirectLiNGAM, and warns when the data
+  look Gaussian, where direction is not identified.
+- **NOTEARS** returned a complete graph with self-loops. It is now the linear
+  augmented-Lagrangian method with an acyclic result.
+- **Hybrid** is defined as the GES graph without the edges PC's tests reject.
+- PC, GES and hybrid return the equivalence class: an edge whose direction the data
+  cannot determine is listed in both directions. `undirected_edges(graph)` lists
+  them and `is_dag(graph)` checks a graph.
+- New `tiers` argument to `CausalDiscovery.discover`: ordering knowledge as
+  `{variable: tier}`. No edge runs from a later tier to an earlier one; GES uses the
+  ordering during the search. `target` is shorthand for a last tier of its own.
+- `CausalSimulator.discover_graph` passes declared confounders and the target as
+  tiers, so a learned graph can no longer make the target a cause of a treatment,
+  and warns, naming the edges, whenever it orients one by assumption.
+- The `correlation` method is documented as a screening tool, not causal discovery.
+- The module no longer claims FCI, which is not implemented.
+
+
 ### Fixed
 - `CausalSimulator.simulate_intervention` now counts effects that travel through
   mediators. The default `monte_carlo` method predicted the target from its direct
