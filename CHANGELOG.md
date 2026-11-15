@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Changed: marketing attribution rewritten and tested against known channel effects
+- `shapley` valued a set of channels by the raw conversion rate of users who saw
+  them, so baseline conversions and the effect of co-occurring channels were
+  credited to whichever channel was present. A channel with no effect received
+  about a fifth of the credit in a four-channel test. Shapley values are now
+  computed on a fitted model of conversion, exactly for up to 8 channels, and
+  baseline conversions are credited to no channel.
+- `logistic` and `linear` used the absolute value of coefficients, so a channel
+  that lowered conversion was credited for it. They now report signed
+  contributions; a harmful channel gets a zero share and a warning.
+- `uplift` and `get_incremental_effects()` compared exposed with unexposed users
+  without adjustment. They now adjust for the other channels and for
+  `covariate_cols`.
+- `markov` started journeys uniformly across channels and redistributed a removed
+  channel's traffic, and returned equal shares on ordinary data. It is now the
+  standard first-order removal effect.
+- `optimize_budget` could return an allocation that did not sum to the budget when
+  constraints applied. It now always sums to the total and rejects limits that
+  cannot be met. It is documented as a proportional rule of thumb, not an optimum.
+- `compare_methods` no longer hides failures or changes the fitted state.
+- The global NumPy random state is no longer reseeded.
+- New: `covariate_cols` (adjust for measured confounders), `path_col` (ordered
+  journeys for the path heuristics), `interactions=True`, `get_contributions()`,
+  `get_baseline()`, `incremental_effects_table()` with bootstrap intervals.
+- When no channel has a positive contribution the shares are all zero, with a
+  warning, instead of an equal split.
+- Touchpoint detection now takes only 0/1 columns.
+- `first_touch`, `last_touch` and `markov` warn when no `path_col` is given, since
+  they then take column order as the order of contact.
+
 ### Changed: causal discovery rewritten and tested against known graphs
 - **PC** oriented every unshielded triple as a collider and guessed remaining
   directions from variances, so chains and forks came back as colliders. It is now

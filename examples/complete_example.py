@@ -152,7 +152,8 @@ print(f"Conversion rate: {touchpoint_data['converted'].mean():.1%}")
 attr = MarketingAttribution(
     data=touchpoint_data,
     conversion_col='converted',
-    touchpoint_cols=['email', 'display', 'search', 'social', 'direct']
+    touchpoint_cols=['email', 'display', 'search', 'social', 'direct'],
+    random_state=42
 )
 
 # Compare attribution methods
@@ -160,16 +161,21 @@ print("\n" + "-" * 50)
 print("Attribution Weights by Method:")
 print("-" * 50)
 
-for method in ['shapley', 'logistic', 'last_touch']:
+for method in ['shapley', 'logistic']:
     attr.fit(method=method)
     weights = attr.get_attribution()
     print(f"\n{method.upper()}:")
     for channel, weight in sorted(weights.items(), key=lambda x: x[1], reverse=True):
         print(f"  {channel}: {weight:.1%}")
 
-# Optimize budget allocation
+print("\nEffect of one exposure, with 95% intervals (true: search 0.15, email 0.10,")
+print("display 0.05, social 0.03, direct 0.01):")
+print(attr.incremental_effects_table(n_bootstrap=100).round(3))
+print(f"\nConversion rate with no marketing (true 0.05): {attr.get_baseline():.3f}")
+
+# Split a budget in proportion to attribution
 print("\n" + "-" * 50)
-print("Optimized Budget Allocation ($100,000):")
+print("Budget split in proportion to attribution ($100,000):")
 print("-" * 50)
 attr.fit(method='shapley')
 optimal = attr.optimize_budget(total_budget=100000)

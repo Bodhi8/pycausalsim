@@ -93,14 +93,35 @@ counterfactuals = scm.counterfactual(
 ```python
 from pycausalsim import MarketingAttribution
 
-attr = MarketingAttribution(data, conversion_col='converted')
-attr.fit(method='shapley')  # Causal Shapley values
+attr = MarketingAttribution(
+    data,
+    conversion_col='converted',
+    touchpoint_cols=['email', 'display', 'search', 'social'],
+    covariate_cols=['prior_purchases'],   # what drives both exposure and conversion
+)
+attr.fit(method='shapley')
 
-weights = attr.get_attribution()
-# {'email': 0.25, 'display': 0.15, 'search': 0.35, 'social': 0.20, 'direct': 0.05}
-
-optimal_budget = attr.optimize_budget(total_budget=100000)
+attr.get_attribution()            # shares of the conversions marketing added
+attr.get_contributions()          # signed, in conversion-rate points
+attr.get_baseline()               # conversion rate with no marketing
+attr.incremental_effects_table()  # effect of an exposure, with confidence intervals
 ```
+
+The incremental methods (`shapley`, `logistic`, `linear`, `uplift`) model
+conversion and ask what would have happened without each channel. Conversions
+that would have happened anyway are credited to no one, a channel with no effect
+earns nothing, and a channel that lowers conversion shows a negative
+contribution. They assume the drivers of both exposure and conversion are
+measured and passed as `covariate_cols`; only an experiment removes that
+assumption.
+
+`markov`, `first_touch` and `last_touch` describe where converting journeys went
+and are not causal. They use the order in `path_col` (for example
+`"search > email"`).
+
+`optimize_budget(total_budget)` splits a budget in proportion to attribution per
+unit cost, within any limits you set. It is a rule of thumb: exposure flags say
+nothing about diminishing returns.
 
 ### 5. A/B Test Analysis
 
