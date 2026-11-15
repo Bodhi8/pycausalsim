@@ -227,7 +227,8 @@ print("\n" + "-" * 50)
 print("Treatment Effect Estimates:")
 print("-" * 50)
 
-for method in ['difference', 'ols', 'dr']:
+print(f"(true average effect: {true_effect.mean():.4f})")
+for method in ['difference', 'ols', 'dr', 'matching']:
     effect = exp.estimate_effect(method=method)
     sig = "***" if effect.p_value < 0.001 else "**" if effect.p_value < 0.01 else "*" if effect.p_value < 0.05 else ""
     print(f"  {method.upper():12} Effect: {effect.estimate:.4f} (p={effect.p_value:.4f}) {sig}")
@@ -241,7 +242,8 @@ for h in het:
     print(f"\nBy {h.covariate}:")
     for seg, eff in h.segments.items():
         ci = h.segment_cis.get(seg, (0, 0))
-        print(f"  Segment {seg}: {eff:.4f} [{ci[0]:.4f}, {ci[1]:.4f}]")
+        print(f"  Tenure {seg}: {eff:.4f} [{ci[0]:.4f}, {ci[1]:.4f}]")
+    print(f"  Same effect in every segment? p = {h.interaction_pvalue:.4f}")
 
 
 # =============================================================================
