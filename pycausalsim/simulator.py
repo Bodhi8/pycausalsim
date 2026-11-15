@@ -149,10 +149,15 @@ class CausalSimulator:
         discovery_data = self.data[discovery_vars]
         
         # Run discovery
+        # Declared roles are background knowledge: a confounder is a cause of the
+        # treatments and the target, not an effect of them, and the target causes
+        # nothing. Other variables are left for the data to place.
+        tiers = {v: (0 if v in self.confounders else 1) for v in discovery_vars}
+        tiers[self.target] = 2
         self._graph = self._discovery.discover(
             data=discovery_data,
             method=method,
-            target=self.target,
+            tiers=tiers,
             **kwargs
         )
         
@@ -167,40 +172,45 @@ class CausalSimulator:
         
         return self
 
-    def _role_tier(self, var: str) -> int:
-        """Causal tier implied by the declared roles: confounders come first,
-        then other variables, then treatments, then the target."""
+    def _role_tier(self, var: str) -> Tuple[int, int]:
+        """Ordering implied by the declared roles: confounders first, the target
+        last, and among the rest a declared treatment after an undeclared
+        variable."""
         if var == self.target:
-            return 3
-        if var in self.treatment_vars:
-            return 2
+            return (2, 0)
         if var in self.confounders:
-            return 0
-        return 1
+            return (0, 0)
+        return (1, 1 if var in self.treatment_vars else 0)
 
     def _orient_two_way_edges(self, graph: Dict[str, List[str]]) -> Dict[str, List[str]]:
-        """Give one direction to every edge listed in both directions."""
+        """Give one direction to every edge listed in both directions.
+
+        These are edges whose direction neither the data nor the declared
+        confounder and target roles settle. They are pointed from an undeclared
+        variable to a declared treatment, and otherwise by column order. Either
+        way the choice is an assumption, so it is reported.
+        """
         graph = {v: list(dict.fromkeys(p)) for v, p in graph.items()}
         order = {c: i for i, c in enumerate(self.data.columns)}
-        by_role, by_order = [], []
+        assumed = []
         for child in list(graph):
             for parent in list(graph[child]):
                 if parent == child or child not in graph.get(parent, []):
                     continue
                 a, b = sorted((child, parent), key=lambda v: (self._role_tier(v), order.get(v, 0)))
-                # a is the cause, b the effect
+                # a is taken to be the cause, b the effect
                 graph[a] = [p for p in graph.get(a, []) if p != b]
                 if a not in graph.setdefault(b, []):
                     graph[b].append(a)
-                (by_role if self._role_tier(a) != self._role_tier(b) else by_order).append(f"{a} -> {b}")
-        if by_order:
+                assumed.append(f"{a} -> {b}")
+        self._oriented_edges = sorted(set(assumed))
+        if assumed:
             warnings.warn(
-                "The data do not determine the direction of these edges, and the declared "
-                f"roles do not either; they were oriented by column order: {sorted(set(by_order))}. "
+                "The data do not determine the direction of these edges; they were "
+                f"oriented by declared role and column order: {self._oriented_edges}. "
                 "Use set_graph() to state the direction you believe.",
                 UserWarning, stacklevel=3
             )
-        self._oriented_edges = {'by_role': sorted(set(by_role)), 'by_column_order': sorted(set(by_order))}
         return graph
 
     def _check_graph(self, graph: Dict[str, List[str]]) -> Dict[str, List[str]]:

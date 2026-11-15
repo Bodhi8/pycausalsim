@@ -55,7 +55,7 @@ device_type = np.random.choice([0, 1, 2], n)  # 0=mobile, 1=desktop, 2=tablet
 # True conversion model (with causal effects)
 # Chosen so the probability stays positive for nearly every visitor; a formula that is
 # clipped at its floor for most rows would leave no effect in the data to find.
-conversion_prob = 0.40 - 0.05 * page_load_time + 0.03 * traffic_source - 0.006 * price
+conversion_prob = 0.40 - 0.05 * page_load_time + 0.06 * traffic_source - 0.006 * price
 conversion_prob = np.clip(conversion_prob, 0.01, 0.99)
 conversion_rate = np.random.binomial(1, conversion_prob) * 100  # Convert to percentage
 
