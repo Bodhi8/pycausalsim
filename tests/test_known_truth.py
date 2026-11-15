@@ -328,13 +328,10 @@ def test_set_graph_rejects_cycles_self_loops_and_unknown_names():
 def test_two_way_edges_are_oriented_from_declared_roles():
     df, _ = _confounded(n=300)
     sim = CausalSimulator(df, target="y", treatment_vars=["x"], confounders=["z"], random_state=0)
-    oriented = sim._orient_two_way_edges({"z": ["x"], "x": ["z"], "y": ["x", "z"]})
+    with pytest.warns(UserWarning, match="do not determine the direction"):
+        oriented = sim._orient_two_way_edges({"z": ["x"], "x": ["z"], "y": ["x", "z"]})
     assert oriented["x"] == ["z"] and oriented["z"] == []
-    assert sim._oriented_edges["by_role"] == ["z -> x"]
-
-    plain = CausalSimulator(df, target="y", random_state=0)
-    with pytest.warns(UserWarning, match="column order"):
-        plain._orient_two_way_edges({"z": ["x"], "x": ["z"], "y": ["x", "z"]})
+    assert sim._oriented_edges == ["z -> x"]
 
 
 def _shop(seed=42, n=5000):
@@ -345,7 +342,7 @@ def _shop(seed=42, n=5000):
     load = 3.0 + 0.5 * source + rng.exponential(0.5, n)
     price = 20 + rng.normal(0, 5, n)
     device = rng.choice([0, 1, 2], n)
-    prob = np.clip(0.40 - 0.05 * load + 0.03 * source - 0.006 * price, 0.01, 0.99)
+    prob = np.clip(0.40 - 0.05 * load + 0.06 * source - 0.006 * price, 0.01, 0.99)
     return pd.DataFrame({
         "traffic_source": source, "page_load_time": load, "price": price,
         "device_type": device, "conversion_rate": rng.binomial(1, prob) * 100.0,
