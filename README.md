@@ -48,11 +48,28 @@ drivers = simulator.rank_drivers()
 
 ### 2. Multiple Discovery Methods
 
-- **Constraint-based**: PC
-- **Score-based**: GES (`"fges"` is accepted as an alias for the same search)
-- **Functional**: LiNGAM for non-Gaussian data
-- **Continuous optimization**: NOTEARS
-- **Hybrid**: Combine methods for robustness
+- **Constraint-based**: PC (PC-stable, Fisher-z tests)
+- **Score-based**: GES with the BIC score (`"fges"` is accepted as an alias for the same search)
+- **Functional**: DirectLiNGAM, for linear models with non-Gaussian noise
+- **Continuous optimization**: linear NOTEARS
+- **Hybrid**: the GES graph without the edges PC's independence tests reject
+
+PC, GES and hybrid return an equivalence class: an edge whose direction the data
+cannot determine is listed in both directions instead of being guessed. What you
+know about ordering settles more of them:
+
+```python
+from pycausalsim.discovery import CausalDiscovery, undirected_edges
+
+graph = CausalDiscovery().discover(
+    data, method="ges",
+    tiers={"age": 0, "dose": 1, "recovery": 2},   # nothing causes an earlier tier
+)
+undirected_edges(graph)   # the edges still undetermined
+```
+
+`CausalSimulator.discover_graph()` passes the declared confounders and target as
+this ordering, and warns about any edge it then has to orient by assumption.
 
 FCI, which allows for latent confounders, is not implemented yet.
 
