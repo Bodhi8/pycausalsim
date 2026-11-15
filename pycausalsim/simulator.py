@@ -15,13 +15,13 @@
 CausalSimulator: Main class for causal discovery and simulation.
 """
 
-from typing import Dict, List, Optional, Union, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 from scipy import stats
 import warnings
 
-from .results import CausalEffect, SimulationResult, SensitivityResult, DriverRanking, OptimalPolicy
+from .results import CausalEffect, SensitivityResult, DriverRanking, OptimalPolicy
 from .discovery import CausalDiscovery
 from .models import StructuralCausalModel
 
@@ -67,6 +67,8 @@ class CausalSimulator:
         confounders: Optional[List[str]] = None,
         random_state: Optional[int] = None
     ):
+        if not isinstance(data, pd.DataFrame):
+            raise TypeError("data must be a pandas DataFrame")
         self.data = data.copy()
         self.target = target
         self.treatment_vars = treatment_vars or []
@@ -85,7 +87,9 @@ class CausalSimulator:
         self._all_vars = list(data.columns)
         self._feature_vars = [c for c in data.columns if c != target]
         
-        # Set random state
+        # Bootstrap resampling uses its own generator, so results with a fixed
+        # random_state do not depend on other code touching NumPy's global state.
+        self._rng = np.random.default_rng(random_state)
         if random_state is not None:
             np.random.seed(random_state)
     
@@ -152,11 +156,94 @@ class CausalSimulator:
             **kwargs
         )
         
+        # Discovery can return edges it could not orient, as a pair of variables
+        # that are each listed as the other's parent. A structural model needs
+        # one direction, so those are oriented from the declared roles.
+        self._graph = self._check_graph(self._orient_two_way_edges(self._graph))
+
         # Fit SCM based on discovered graph
         self._scm = StructuralCausalModel(graph=self._graph)
         self._scm.fit(self.data)
         
         return self
+
+    def _role_tier(self, var: str) -> int:
+        """Causal tier implied by the declared roles: confounders come first,
+        then other variables, then treatments, then the target."""
+        if var == self.target:
+            return 3
+        if var in self.treatment_vars:
+            return 2
+        if var in self.confounders:
+            return 0
+        return 1
+
+    def _orient_two_way_edges(self, graph: Dict[str, List[str]]) -> Dict[str, List[str]]:
+        """Give one direction to every edge listed in both directions."""
+        graph = {v: list(dict.fromkeys(p)) for v, p in graph.items()}
+        order = {c: i for i, c in enumerate(self.data.columns)}
+        by_role, by_order = [], []
+        for child in list(graph):
+            for parent in list(graph[child]):
+                if parent == child or child not in graph.get(parent, []):
+                    continue
+                a, b = sorted((child, parent), key=lambda v: (self._role_tier(v), order.get(v, 0)))
+                # a is the cause, b the effect
+                graph[a] = [p for p in graph.get(a, []) if p != b]
+                if a not in graph.setdefault(b, []):
+                    graph[b].append(a)
+                (by_role if self._role_tier(a) != self._role_tier(b) else by_order).append(f"{a} -> {b}")
+        if by_order:
+            warnings.warn(
+                "The data do not determine the direction of these edges, and the declared "
+                f"roles do not either; they were oriented by column order: {sorted(set(by_order))}. "
+                "Use set_graph() to state the direction you believe.",
+                UserWarning, stacklevel=3
+            )
+        self._oriented_edges = {'by_role': sorted(set(by_role)), 'by_column_order': sorted(set(by_order))}
+        return graph
+
+    def _check_graph(self, graph: Dict[str, List[str]]) -> Dict[str, List[str]]:
+        """Validate a graph given as {variable: [its direct causes]}.
+
+        Every name must be a column of the data, and the graph must have no
+        cycles: a structural model computes each variable from its causes, which
+        is undefined if a variable is among its own causes.
+        """
+        if not isinstance(graph, dict):
+            raise TypeError("graph must be a dict of {variable: [direct causes]}")
+        columns = set(self.data.columns)
+        clean: Dict[str, List[str]] = {}
+        for var, parents in graph.items():
+            if isinstance(parents, str):
+                raise TypeError(f"Parents of '{var}' must be a list, not a string")
+            parents = list(dict.fromkeys(parents))
+            for name in [var] + parents:
+                if name not in columns:
+                    raise ValueError(f"Graph variable '{name}' is not a column of the data")
+            if var in parents:
+                raise ValueError(f"Graph has a self-loop on '{var}'")
+            clean[var] = parents
+
+        # Depth-first search for a cycle along parent links
+        state: Dict[str, int] = {}
+
+        def visit(node, path):
+            state[node] = 1
+            for parent in clean.get(node, []):
+                if state.get(parent) == 1:
+                    cycle = path[path.index(parent):] + [parent] if parent in path else [parent, node, parent]
+                    raise ValueError(
+                        "Graph has a cycle: " + " <- ".join(cycle) + ". A causal graph must be acyclic."
+                    )
+                if state.get(parent) is None:
+                    visit(parent, path + [parent])
+            state[node] = 2
+
+        for var in clean:
+            if state.get(var) is None:
+                visit(var, [var])
+        return clean
     
     def set_graph(self, graph: Dict[str, List[str]]) -> 'CausalSimulator':
         """
@@ -172,8 +259,8 @@ class CausalSimulator:
         -------
         self
         """
-        self._graph = graph
-        self._scm = StructuralCausalModel(graph=graph)
+        self._graph = self._check_graph(graph)
+        self._scm = StructuralCausalModel(graph=self._graph)
         self._scm.fit(self.data)
         return self
     
@@ -183,14 +270,21 @@ class CausalSimulator:
         value: float,
         n_simulations: int = 1000,
         method: str = 'monte_carlo',
-        condition: Optional[Dict[str, Any]] = None
+        condition: Optional[Dict[str, Any]] = None,
+        n_bootstrap: Optional[int] = None
     ) -> CausalEffect:
         """
-        Simulate the causal effect of an intervention.
-        
-        Uses counterfactual simulation to estimate what would happen
-        if we set a variable to a specific value.
-        
+        Estimate the causal effect of setting a variable to a value.
+
+        The estimate is ``E[target | do(variable = value)] - E[target]``. The
+        intervention is propagated through every variable downstream of
+        ``variable`` in the graph, so effects that travel through mediators are
+        counted.
+
+        Uncertainty comes from a bootstrap that refits the model on each
+        resample, so the interval reflects how well the data pin down the
+        mechanisms, not only which rows were drawn.
+
         Parameters
         ----------
         variable : str
@@ -198,32 +292,57 @@ class CausalSimulator:
         value : float
             The value to set the variable to
         n_simulations : int
-            Number of Monte Carlo simulations
+            Upper bound on the number of bootstrap refits (see ``n_bootstrap``)
         method : str
-            Simulation method: 'monte_carlo', 'scm', 'backdoor'
+            'monte_carlo' or 'scm': fit a mechanism for each variable and
+            propagate the intervention through the graph (the two names are
+            equivalent). 'backdoor': linear regression of the target on the
+            variable and a backdoor adjustment set read from the graph.
         condition : dict, optional
             Conditions to apply (e.g., {'traffic_source': 'paid'})
-            
+        n_bootstrap : int, optional
+            Number of bootstrap refits. Defaults to ``min(n_simulations, 100)``;
+            each refit trains the mechanisms again, so large values are slow.
+
         Returns
         -------
         CausalEffect
-            Object containing the causal effect estimate and confidence interval
-            
+            Point estimate from the full data, a 95% percentile interval from
+            the bootstrap, and a two-sided p-value from the bootstrap standard
+            error. ``n_simulations`` on the result is the number of refits used.
+
+        Notes
+        -----
+        Mechanisms are tree ensembles, which cannot extrapolate: an
+        intervention value outside the observed range of ``variable`` is
+        treated as the nearest observed value, and a warning is raised.
+
         Examples
         --------
         >>> effect = simulator.simulate_intervention('page_load_time', 2.0)
-        >>> print(f"Effect: {effect.point_estimate:.2%}")
-        >>> print(f"95% CI: [{effect.ci_lower:.2%}, {effect.ci_upper:.2%}]")
+        >>> print(f"Effect: {effect.point_estimate:.3f}")
+        >>> print(f"95% CI: [{effect.ci_lower:.3f}, {effect.ci_upper:.3f}]")
         """
         if self._scm is None:
             raise RuntimeError("Must call discover_graph() first or set_graph()")
-        
+
         if variable not in self.data.columns:
             raise ValueError(f"Variable '{variable}' not in data")
-        
+
+        if variable == self.target:
+            raise ValueError("Cannot intervene on the target variable itself")
+
+        if method not in ('monte_carlo', 'scm', 'backdoor'):
+            raise ValueError(f"Unknown method: {method}")
+
+        if n_bootstrap is None:
+            n_bootstrap = min(int(n_simulations), 100)
+        if n_bootstrap < 2:
+            raise ValueError("n_bootstrap must be at least 2")
+
         # Get original value
         original_value = self.data[variable].mean()
-        
+
         # Apply conditions if specified
         data = self.data
         if condition is not None:
@@ -231,141 +350,144 @@ class CausalSimulator:
             for k, v in condition.items():
                 mask &= (data[k] == v)
             data = data[mask]
-        
+
         if len(data) == 0:
             raise ValueError("No data matches the specified conditions")
-        
-        # Run simulation based on method
-        if method == 'monte_carlo':
-            effects = self._simulate_monte_carlo(data, variable, value, n_simulations)
-        elif method == 'scm':
-            effects = self._simulate_scm(data, variable, value, n_simulations)
-        elif method == 'backdoor':
-            effects = self._simulate_backdoor(data, variable, value, n_simulations)
+
+        if method != 'backdoor':
+            lo, hi = self.data[variable].min(), self.data[variable].max()
+            if value < lo or value > hi:
+                warnings.warn(
+                    f"Intervention value {value} for '{variable}' is outside its observed "
+                    f"range [{lo:.4g}, {hi:.4g}]. Tree-based mechanisms cannot extrapolate, "
+                    "so the effect is estimated as if the value were at the nearest "
+                    "observed extreme.",
+                    UserWarning, stacklevel=2
+                )
+
+        if method == 'backdoor':
+            adjustment_set = self._get_adjustment_set(variable)
+
+            def estimate(frame):
+                return self._backdoor_adjustment(frame, variable, value, adjustment_set)
         else:
-            raise ValueError(f"Unknown method: {method}")
-        
-        # Compute statistics
-        point_estimate = np.mean(effects)
+            def estimate(frame):
+                return self._scm_effect(frame, variable, value)
+
+        point_estimate = float(estimate(data))
+
+        n = len(data)
+        effects = np.zeros(n_bootstrap)
+        for i in range(n_bootstrap):
+            idx = self._rng.integers(0, n, size=n)
+            effects[i] = estimate(data.iloc[idx])
+
         ci_lower, ci_upper = np.percentile(effects, [2.5, 97.5])
-        
-        # P-value (two-tailed test against null of zero effect)
-        t_stat = point_estimate / (np.std(effects) / np.sqrt(len(effects)) + 1e-10)
-        p_value = 2 * (1 - stats.t.cdf(abs(t_stat), df=len(effects)-1))
-        
+
+        # Two-sided p-value against zero effect. The bootstrap standard deviation
+        # is itself the standard error of the estimate; it is not divided by the
+        # number of replicates.
+        se = float(np.std(effects, ddof=1))
+        if se > 0:
+            p_value = float(2 * stats.norm.sf(abs(point_estimate) / se))
+        else:
+            p_value = 1.0 if point_estimate == 0 else 0.0
+
         return CausalEffect(
             variable=variable,
             intervention_value=value,
             original_value=original_value,
             target=self.target,
             point_estimate=point_estimate,
-            ci_lower=ci_lower,
-            ci_upper=ci_upper,
+            ci_lower=float(ci_lower),
+            ci_upper=float(ci_upper),
             p_value=p_value,
-            n_simulations=n_simulations,
+            n_simulations=n_bootstrap,
             method=method,
-            samples=effects
+            samples=effects,
+            baseline_outcome=float(data[self.target].mean())
         )
-    
-    def _simulate_monte_carlo(
-        self,
-        data: pd.DataFrame,
-        variable: str,
-        value: float,
-        n_simulations: int
-    ) -> np.ndarray:
-        """Monte Carlo simulation for causal effect."""
-        effects = np.zeros(n_simulations)
-        n_samples = len(data)
-        
-        for i in range(n_simulations):
-            # Bootstrap sample
-            idx = np.random.choice(n_samples, size=n_samples, replace=True)
-            sample = data.iloc[idx].copy()
-            
-            # Factual outcome
-            y_factual = sample[self.target].values
-            
-            # Counterfactual: intervene on variable
-            sample_cf = sample.copy()
-            sample_cf[variable] = value
-            
-            # Predict counterfactual outcome using SCM
-            y_counterfactual = self._scm.predict(sample_cf, self.target)
-            
-            # Average treatment effect
-            effects[i] = np.mean(y_counterfactual) - np.mean(y_factual)
-        
-        return effects
-    
-    def _simulate_scm(
-        self,
-        data: pd.DataFrame,
-        variable: str,
-        value: float,
-        n_simulations: int
-    ) -> np.ndarray:
-        """SCM-based simulation with noise."""
-        effects = np.zeros(n_simulations)
-        
-        for i in range(n_simulations):
-            # Generate counterfactual using SCM
-            cf_data = self._scm.counterfactual(
-                intervention={variable: value},
-                data=data,
-                noise_scale=0.1
-            )
-            
-            y_factual = data[self.target].values
-            y_counterfactual = cf_data[self.target].values
-            
-            effects[i] = np.mean(y_counterfactual) - np.mean(y_factual)
-        
-        return effects
-    
-    def _simulate_backdoor(
-        self,
-        data: pd.DataFrame,
-        variable: str,
-        value: float,
-        n_simulations: int
-    ) -> np.ndarray:
-        """Backdoor adjustment simulation."""
-        effects = np.zeros(n_simulations)
-        
-        # Get backdoor adjustment set
-        adjustment_set = self._get_adjustment_set(variable)
-        
-        for i in range(n_simulations):
-            # Bootstrap
-            idx = np.random.choice(len(data), size=len(data), replace=True)
-            sample = data.iloc[idx]
-            
-            # Stratified estimation
-            effect = self._backdoor_adjustment(
-                sample, variable, value, adjustment_set
-            )
-            effects[i] = effect
-        
-        return effects
-    
+
+    # ------------------------------------------------------------------
+    # Graph helpers
+    # ------------------------------------------------------------------
+
+    def _parents(self, var: str) -> List[str]:
+        return list((self._graph or {}).get(var, []))
+
+    def _descendants(self, var: str) -> set:
+        """All variables downstream of ``var`` in the graph."""
+        graph = self._graph or {}
+        children: Dict[str, List[str]] = {}
+        for child, parents in graph.items():
+            for p in parents:
+                children.setdefault(p, []).append(child)
+        seen: set = set()
+        stack = list(children.get(var, []))
+        while stack:
+            v = stack.pop()
+            if v not in seen:
+                seen.add(v)
+                stack.extend(children.get(v, []))
+        return seen
+
+    def _ancestors(self, var: str) -> set:
+        """All variables upstream of ``var`` in the graph."""
+        seen: set = set()
+        stack = self._parents(var)
+        while stack:
+            v = stack.pop()
+            if v not in seen:
+                seen.add(v)
+                stack.extend(self._parents(v))
+        return seen
+
+    def _scm_effect(self, frame: pd.DataFrame, variable: str, value: float) -> float:
+        """Effect of do(variable = value) on the target, with mechanisms fitted on ``frame``.
+
+        Only the mechanisms on a causal path from ``variable`` to the target are
+        fitted: those of the target and of the mediators between the two. If the
+        target is not downstream of ``variable`` the effect is exactly zero.
+        """
+        downstream = self._descendants(variable)
+        if self.target not in downstream:
+            return 0.0
+
+        on_path = (downstream & self._ancestors(self.target)) | {self.target}
+        inputs = set()
+        for v in on_path:
+            inputs.update(self._parents(v))
+        columns = [c for c in frame.columns if c in on_path or c in inputs or c == variable]
+
+        # Variables off the path keep their observed values, so they are roots here.
+        subgraph = {c: (self._parents(c) if c in on_path else []) for c in columns}
+        scm = StructuralCausalModel(graph=subgraph)
+        sub = frame[columns]
+        scm.fit(sub)
+        counterfactual = scm.counterfactual(intervention={variable: value}, data=sub)
+        return float(np.mean(counterfactual[self.target].values) - np.mean(sub[self.target].values))
+
     def _get_adjustment_set(self, treatment: str) -> List[str]:
-        """Get minimal adjustment set for backdoor criterion."""
-        if self._graph is None:
-            return self.confounders
-        
-        # Use confounders if specified, otherwise find from graph
-        if self.confounders:
-            return self.confounders
-        
-        # Find all ancestors of treatment and target that are common
-        adjustment_set = []
-        for var in self._feature_vars:
-            if var != treatment and var != self.target:
-                adjustment_set.append(var)
-        
-        return adjustment_set
-    
+        """Backdoor adjustment set for the effect of ``treatment`` on the target.
+
+        With confounders supplied by the user, those are used. Otherwise the
+        parents of the treatment in the graph are used, which block every
+        backdoor path when the graph has no hidden common causes. Variables
+        downstream of the treatment (mediators, the target's other effects) are
+        never adjusted for: doing so removes or distorts the effect.
+        """
+        downstream = self._descendants(treatment) if self._graph is not None else set()
+        candidates = list(self.confounders) if self.confounders else self._parents(treatment)
+
+        dropped = [c for c in candidates if c in downstream]
+        if dropped:
+            warnings.warn(
+                f"Not adjusting for {dropped}: downstream of '{treatment}' in the graph.",
+                UserWarning, stacklevel=3
+            )
+        return [c for c in candidates
+                if c not in downstream and c != treatment and c != self.target]
+
     def _backdoor_adjustment(
         self,
         data: pd.DataFrame,
@@ -373,46 +495,56 @@ class CausalSimulator:
         value: float,
         adjustment_set: List[str]
     ) -> float:
-        """Compute backdoor-adjusted effect."""
+        """Backdoor-adjusted effect from a linear outcome model."""
         from sklearn.linear_model import LinearRegression
-        
-        # Fit outcome model with treatment and confounders
+
+        # Fit outcome model with treatment and the adjustment set
         X = data[[treatment] + adjustment_set].values
         y = data[self.target].values
-        
+
         model = LinearRegression()
         model.fit(X, y)
-        
+
         # Predict under intervention
         X_intervened = X.copy()
         X_intervened[:, 0] = value
         y_intervened = model.predict(X_intervened)
-        
-        return np.mean(y_intervened) - np.mean(y)
-    
+
+        return float(np.mean(y_intervened) - np.mean(y))
+
     def rank_drivers(
         self,
         standardize: bool = True,
         method: str = 'intervention',
-        n_simulations: int = 500
+        n_simulations: int = 500,
+        n_bootstrap: Optional[int] = None
     ) -> DriverRanking:
         """
         Rank variables by their causal importance for the target.
-        
+
+        Each variable is shifted (by one standard deviation, or by 10% of its
+        mean when ``standardize`` is False) and its total effect on the target
+        is estimated with :meth:`simulate_intervention`, mediated paths included.
+        Variables with no causal path to the target rank last with an effect of
+        zero.
+
         Parameters
         ----------
         standardize : bool
-            Whether to use standardized effect sizes
+            Shift each variable by one standard deviation (True) or by 10% of
+            its mean (False)
         method : str
-            Method for computing effects: 'intervention', 'shap', 'gradient'
+            Only 'intervention' is implemented
         n_simulations : int
-            Number of simulations per variable
-            
+            Upper bound on bootstrap refits per variable
+        n_bootstrap : int, optional
+            Bootstrap refits per variable. Defaults to ``min(n_simulations, 50)``.
+
         Returns
         -------
         DriverRanking
             Ranked list of (variable, effect) tuples
-            
+
         Examples
         --------
         >>> drivers = simulator.rank_drivers()
@@ -421,343 +553,390 @@ class CausalSimulator:
         """
         if self._scm is None:
             raise RuntimeError("Must call discover_graph() first")
-        
+        if method != 'intervention':
+            raise ValueError(
+                f"Unknown method: {method!r}. Only 'intervention' is implemented."
+            )
+        if n_bootstrap is None:
+            n_bootstrap = min(int(n_simulations), 50)
+
         effects = {}
         effect_objects = {}
-        
+
         for var in self._feature_vars:
             if var == self.target:
                 continue
-            
+
             # Compute standardized intervention
             current_mean = self.data[var].mean()
             current_std = self.data[var].std()
-            
+
             if standardize and current_std > 0:
                 # One standard deviation increase
                 intervention_value = current_mean + current_std
             else:
                 # 10% increase
                 intervention_value = current_mean * 1.1
-            
+
             try:
-                effect = self.simulate_intervention(
-                    variable=var,
-                    value=intervention_value,
-                    n_simulations=n_simulations,
-                    method='monte_carlo'
-                )
-                
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    effect = self.simulate_intervention(
+                        variable=var,
+                        value=intervention_value,
+                        method='monte_carlo',
+                        n_bootstrap=n_bootstrap
+                    )
                 effects[var] = effect.point_estimate
                 effect_objects[var] = effect
             except Exception as e:
-                warnings.warn(f"Could not compute effect for {var}: {e}")
-                effects[var] = 0.0
-        
+                # A variable whose effect could not be estimated is left out of
+                # the ranking; reporting it as zero would read as "no effect".
+                warnings.warn(f"Could not compute effect for {var}: {e}; it is not ranked.")
+
         # Sort by absolute effect
         sorted_effects = sorted(
             effects.items(),
             key=lambda x: abs(x[1]),
             reverse=True
         )
-        
+
         return DriverRanking(
             target=self.target,
             drivers=sorted_effects,
             effects=effect_objects,
             method=method
         )
-    
+
     def validate(
         self,
         variable: Optional[str] = None,
-        n_simulations: int = 500
+        n_simulations: int = 500,
+        n_bootstrap: Optional[int] = None
     ) -> SensitivityResult:
         """
-        Run sensitivity analysis to validate causal claims.
-        
+        Run sensitivity analysis on a causal effect.
+
+        Four checks are run for the effect of raising ``variable`` by one
+        standard deviation:
+
+        - **Robustness value** (Cinelli and Hazlett, 2020): the share of residual
+          variance an unobserved confounder would have to explain, in both the
+          variable and the target, to bring the effect to zero. Near 0 means
+          fragile, near 1 means very robust.
+        - **Confounding bounds**: the range the effect could take if such a
+          confounder explained 10%, 20%, 30% or 50% of both.
+        - **Placebo treatment**: the variable is shuffled, which destroys any
+          real effect, and the effect is estimated again. It should not be
+          significant.
+        - **Refutations**: adding an unrelated variable should not move the
+          estimate, and half-samples should give estimates of the same sign.
+
+        The robustness value, the bounds and the refutations use a linear
+        outcome model with the backdoor adjustment set read from the graph.
+
         Parameters
         ----------
         variable : str, optional
-            Variable to validate. If None, validates top driver.
+            Variable to validate. If None, validates the top driver.
         n_simulations : int
-            Number of simulations for tests
-            
+            Upper bound on bootstrap refits
+        n_bootstrap : int, optional
+            Bootstrap refits for the effect estimates. Defaults to
+            ``min(n_simulations, 50)``.
+
         Returns
         -------
         SensitivityResult
             Sensitivity analysis results
-            
+
         Examples
         --------
-        >>> sensitivity = simulator.validate()
-        >>> sensitivity.confounding_bounds()
-        >>> sensitivity.placebo_test()
+        >>> sensitivity = simulator.validate('price')
+        >>> print(sensitivity.summary())
+        >>> sensitivity.robustness_value
         """
         if self._scm is None:
             raise RuntimeError("Must call discover_graph() first")
-        
+        if n_bootstrap is None:
+            n_bootstrap = min(int(n_simulations), 50)
+
         # Get variable to validate
         if variable is None:
-            drivers = self.rank_drivers(n_simulations=100)
-            variable = drivers[0][0] if drivers else self._feature_vars[0]
-        
+            drivers = self.rank_drivers(n_bootstrap=min(n_bootstrap, 20))
+            if not len(drivers):
+                raise ValueError("No variable with an estimable effect to validate")
+            variable = drivers[0][0]
+        if variable not in self.data.columns:
+            raise ValueError(f"Variable '{variable}' not in data")
+        if variable == self.target:
+            raise ValueError("Cannot validate the target variable against itself")
+
+        shift = float(self.data[variable].std())
+        value = float(self.data[variable].mean()) + shift
+
         # Original effect
         original_effect = self.simulate_intervention(
-            variable=variable,
-            value=self.data[variable].mean() + self.data[variable].std(),
-            n_simulations=n_simulations
+            variable=variable, value=value, n_bootstrap=n_bootstrap
         )
-        
-        # Confounding bounds
-        confounding_bounds = self._compute_confounding_bounds(
-            variable, original_effect, n_simulations
-        )
-        
-        # Placebo tests
-        placebo_results = self._run_placebo_tests(
-            variable, n_simulations
-        )
-        
-        # Refutation
-        refutation_results = self._run_refutations(
-            variable, original_effect, n_simulations
-        )
-        
-        # Robustness value
-        robustness_value = self._compute_robustness_value(
-            original_effect, confounding_bounds
-        )
-        
+
+        fit = self._linear_fit(self.data, variable, self._get_adjustment_set(variable))
+
+        confounding_bounds = self._compute_confounding_bounds(fit, shift)
+        robustness_value = self._compute_robustness_value(fit)
+        placebo_results = self._run_placebo_tests(variable, value, n_bootstrap)
+        refutation_results = self._run_refutations(variable, fit, shift, placebo_results)
+
         return SensitivityResult(
             original_effect=original_effect,
             confounding_bounds=confounding_bounds,
-            placebo_results=placebo_results,
+            placebo_results={k: v for k, v in placebo_results.items() if k != 'placebo_effect'},
             refutation_results=refutation_results,
             robustness_value=robustness_value
         )
-    
+
+    def _linear_fit(
+        self,
+        data: pd.DataFrame,
+        variable: str,
+        adjustment_set: List[str],
+        extra: Optional[np.ndarray] = None
+    ) -> Dict[str, float]:
+        """Least-squares fit of the target on the variable and an adjustment set.
+
+        Returns the variable's coefficient, its standard error, the residual
+        degrees of freedom and the t statistic. ``extra`` is one more regressor.
+        """
+        y = data[self.target].to_numpy(dtype=float)
+        cols = [data[variable].to_numpy(dtype=float)]
+        cols += [data[c].to_numpy(dtype=float) for c in adjustment_set]
+        if extra is not None:
+            cols.append(np.asarray(extra, dtype=float))
+        X = np.column_stack([np.ones(len(data))] + cols)
+        n, k = X.shape
+        df = n - k
+        if df <= 0:
+            raise ValueError("Not enough observations for the linear sensitivity model")
+        beta, _, rank, _ = np.linalg.lstsq(X, y, rcond=None)
+        if rank < k:
+            raise ValueError(
+                f"'{variable}' is constant or collinear with its adjustment set; "
+                "its effect is not identified by a linear model"
+            )
+        resid = y - X @ beta
+        sigma2 = float(resid @ resid) / df
+        cov = sigma2 * np.linalg.inv(X.T @ X)
+        se = float(np.sqrt(cov[1, 1]))
+        coef = float(beta[1])
+        t = coef / se if se > 0 else np.inf
+        return {'coef': coef, 'se': se, 'df': float(df), 't': float(t)}
+
     def _compute_confounding_bounds(
         self,
-        variable: str,
-        original_effect: CausalEffect,
-        n_simulations: int
+        fit: Dict[str, float],
+        shift: float
     ) -> Dict[str, Tuple[float, float]]:
-        """Compute effect bounds under different confounding assumptions."""
+        """Range of the effect under an unobserved confounder of a given strength.
+
+        For a confounder that explains a share ``s`` of the residual variance of
+        both the variable and the target, the largest possible bias in the
+        coefficient is ``se * sqrt(df) * sqrt(s * s / (1 - s))`` (Cinelli and
+        Hazlett, 2020, with equal partial R-squared on both sides).
+        """
         bounds = {}
-        
         for strength in [0.1, 0.2, 0.3, 0.5]:
-            # Simulate unobserved confounder
-            lower, upper = self._bound_with_confounder(
-                variable, original_effect, strength, n_simulations
+            bias = fit['se'] * np.sqrt(fit['df']) * np.sqrt(strength * strength / (1 - strength))
+            bounds[str(strength)] = (
+                float((fit['coef'] - bias) * shift),
+                float((fit['coef'] + bias) * shift)
             )
-            bounds[str(strength)] = (lower, upper)
-        
         return bounds
-    
-    def _bound_with_confounder(
-        self,
-        variable: str,
-        original_effect: CausalEffect,
-        strength: float,
-        n_simulations: int
-    ) -> Tuple[float, float]:
-        """Compute bounds assuming unobserved confounder of given strength."""
-        effect = original_effect.point_estimate
-        
-        # Rosenbaum-style bounds
-        gamma = 1 + strength * 2  # Sensitivity parameter
-        
-        lower = effect - strength * abs(effect)
-        upper = effect + strength * abs(effect)
-        
-        return (lower, upper)
-    
+
     def _run_placebo_tests(
         self,
         variable: str,
-        n_simulations: int
+        value: float,
+        n_bootstrap: int
     ) -> Dict[str, float]:
-        """Run placebo tests."""
+        """Placebo and stability checks, each estimated like the original effect."""
         results = {}
-        
-        # Random permutation test
-        original = self.simulate_intervention(
-            variable, 
-            self.data[variable].mean() * 1.1,
-            n_simulations=100
+
+        # Placebo treatment: shuffling the variable breaks its link to everything
+        # else, so the same estimator should report nothing significant.
+        placebo_data = self.data.copy()
+        placebo_data[variable] = self._rng.permutation(placebo_data[variable].to_numpy())
+        placebo_sim = CausalSimulator(
+            placebo_data, target=self.target, confounders=self.confounders,
+            random_state=int(self._rng.integers(0, 2**31 - 1))
         )
-        
-        permutation_effects = []
-        for _ in range(100):
-            shuffled_data = self.data.copy()
-            shuffled_data[variable] = np.random.permutation(shuffled_data[variable])
-            
-            temp_scm = StructuralCausalModel(graph=self._graph)
-            temp_scm.fit(shuffled_data)
-            
-            # Simple estimate
-            effect = np.corrcoef(shuffled_data[variable], shuffled_data[self.target])[0, 1]
-            permutation_effects.append(effect)
-        
-        # P-value: fraction of permuted effects >= observed
-        p_value = np.mean(np.abs(permutation_effects) >= abs(original.point_estimate))
-        results['permutation_test'] = p_value
-        
-        # Subset stability test
+        placebo_sim.set_graph(self._graph)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            placebo = placebo_sim.simulate_intervention(variable, value, n_bootstrap=n_bootstrap)
+        results['placebo_treatment'] = float(placebo.p_value)
+        results['placebo_effect'] = float(placebo.point_estimate)
+
+        # Subset stability: share of half-samples whose estimate has the sign of
+        # the full-sample estimate.
+        adjustment_set = self._get_adjustment_set(variable)
+        full = self._linear_fit(self.data, variable, adjustment_set)['coef']
         n = len(self.data)
-        subset_effects = []
-        for _ in range(50):
-            idx = np.random.choice(n, size=n//2, replace=False)
-            subset = self.data.iloc[idx]
-            
-            temp_scm = StructuralCausalModel(graph=self._graph)
-            temp_scm.fit(subset)
-            
-            effect = np.corrcoef(subset[variable], subset[self.target])[0, 1]
-            subset_effects.append(effect)
-        
-        # CV of subset effects (lower is more stable)
-        cv = np.std(subset_effects) / (np.abs(np.mean(subset_effects)) + 1e-10)
-        results['subset_stability'] = 1 - min(cv, 1)  # Convert to p-value-like metric
-        
+        same_sign = []
+        for _ in range(40):
+            idx = self._rng.choice(n, size=max(n // 2, len(adjustment_set) + 3), replace=False)
+            try:
+                coef = self._linear_fit(self.data.iloc[idx], variable, adjustment_set)['coef']
+            except ValueError:
+                continue
+            same_sign.append(np.sign(coef) == np.sign(full))
+        results['subset_stability'] = float(np.mean(same_sign)) if same_sign else float('nan')
+
         return results
-    
+
     def _run_refutations(
         self,
         variable: str,
-        original_effect: CausalEffect,
-        n_simulations: int
+        fit: Dict[str, float],
+        shift: float,
+        placebo_results: Dict[str, float]
     ) -> Dict[str, Any]:
-        """Run refutation methods."""
+        """Refutation checks on the linear backdoor estimate."""
         results = {}
-        
-        # Add random common cause
-        data_with_random = self.data.copy()
-        data_with_random['_random_confounder'] = np.random.randn(len(self.data))
-        
-        # Check if effect changes significantly
-        new_confounders = self.confounders + ['_random_confounder']
-        
-        # Simple regression-based check
-        from sklearn.linear_model import LinearRegression
-        
-        X_original = self.data[[variable] + self.confounders].values
-        X_new = data_with_random[[variable] + new_confounders].values
-        y = self.data[self.target].values
-        
-        model_original = LinearRegression().fit(X_original, y)
-        model_new = LinearRegression().fit(X_new, y)
-        
-        coef_change = abs(model_new.coef_[0] - model_original.coef_[0])
+        adjustment_set = self._get_adjustment_set(variable)
+
+        # Random common cause: an unrelated variable added to the adjustment set
+        # should move the coefficient by less than its own sampling error.
+        noise = self._rng.standard_normal(len(self.data))
+        with_noise = self._linear_fit(self.data, variable, adjustment_set, extra=noise)
+        change = abs(with_noise['coef'] - fit['coef'])
         results['random_common_cause'] = {
-            'original_coef': model_original.coef_[0],
-            'new_coef': model_new.coef_[0],
-            'change': coef_change,
-            'passed': coef_change < 0.1 * abs(model_original.coef_[0])
+            'original_coef': fit['coef'],
+            'new_coef': with_noise['coef'],
+            'change': float(change),
+            'passed': bool(change < 2 * fit['se'])
         }
-        
-        # Placebo treatment
-        placebo_treatment = np.random.randn(len(self.data))
-        placebo_corr = np.corrcoef(placebo_treatment, self.data[self.target])[0, 1]
+
+        # Placebo treatment: the shuffled variable should have no significant effect.
         results['placebo_treatment'] = {
-            'effect': placebo_corr,
-            'passed': abs(placebo_corr) < 0.1
+            'effect': placebo_results['placebo_effect'],
+            'p_value': placebo_results['placebo_treatment'],
+            'passed': bool(placebo_results['placebo_treatment'] > 0.05)
         }
-        
+
+        # Data subsets: half-samples should agree with the full sample on sign.
+        stability = placebo_results['subset_stability']
+        results['data_subset'] = {
+            'same_sign_share': stability,
+            'passed': bool(stability >= 0.9)
+        }
+
         return results
-    
-    def _compute_robustness_value(
-        self,
-        effect: CausalEffect,
-        bounds: Dict[str, Tuple[float, float]]
-    ) -> float:
-        """Compute robustness value (minimum confounding to nullify effect)."""
-        for strength, (lower, upper) in sorted(bounds.items()):
-            if lower <= 0 <= upper:
-                return float(strength)
-        return 1.0  # Very robust
-    
+
+    def _compute_robustness_value(self, fit: Dict[str, float]) -> float:
+        """Robustness value of the linear estimate (Cinelli and Hazlett, 2020).
+
+        ``RV = (sqrt(f**4 + 4 f**2) - f**2) / 2`` with ``f = |t| / sqrt(df)``:
+        the partial R-squared an unobserved confounder would need with both the
+        variable and the target to reduce the estimate to zero.
+        """
+        if not np.isfinite(fit['t']):
+            return 1.0
+        f2 = fit['t'] ** 2 / fit['df']
+        return float(0.5 * (np.sqrt(f2 * f2 + 4 * f2) - f2))
+
     def optimize_policy(
         self,
         objective: str = 'maximize',
         constraints: Optional[Dict[str, Tuple[float, float]]] = None,
-        n_iterations: int = 100
+        n_iterations: int = 100,
+        grid_points: int = 5
     ) -> OptimalPolicy:
         """
-        Find optimal policy to maximize/minimize target.
-        
+        Find the settings of the treatment variables that maximize or minimize the target.
+
+        Every combination on a grid is evaluated by setting the variables jointly
+        and propagating the intervention through the graph, so effects through
+        mediators count. The search covers ``treatment_vars`` if they were given,
+        otherwise up to five variables that cause the target according to the
+        graph.
+
         Parameters
         ----------
         objective : str
-            'maximize' or 'minimize' the target
+            A string containing 'max' or 'min' (for example 'maximize')
         constraints : dict
-            Variable constraints as {var: (min, max)}
+            Variable constraints as {var: (min, max)}. Defaults to each
+            variable's observed range, which is also as far as the model can be
+            trusted.
         n_iterations : int
-            Number of optimization iterations
-            
+            Unused; kept for backward compatibility
+        grid_points : int
+            Grid values per variable
+
         Returns
         -------
         OptimalPolicy
             Optimal settings for treatment variables
-            
+
         Examples
         --------
         >>> optimal = simulator.optimize_policy(
-        ...     objective='maximize_conversion',
+        ...     objective='maximize',
         ...     constraints={'price': (10, 50)}
         ... )
         >>> print(optimal.settings)
         """
         if self._scm is None:
             raise RuntimeError("Must call discover_graph() first")
-        
+
+        goal = objective.lower()
+        if ('max' in goal) == ('min' in goal):
+            raise ValueError("objective must contain either 'max' or 'min'")
+        maximize = 'max' in goal
+
         # Variables to optimize
-        vars_to_optimize = self.treatment_vars if self.treatment_vars else self._feature_vars[:5]
-        
+        if self.treatment_vars:
+            vars_to_optimize = [v for v in self.treatment_vars if v != self.target]
+        else:
+            causes = self._ancestors(self.target)
+            vars_to_optimize = [v for v in self._feature_vars if v in causes][:5]
+        if not vars_to_optimize:
+            raise ValueError(
+                "No variable to optimize: pass treatment_vars, or use a graph in which "
+                "some variable causes the target"
+            )
+
         # Set default constraints
-        if constraints is None:
-            constraints = {}
-        
+        constraints = dict(constraints or {})
         for var in vars_to_optimize:
             if var not in constraints:
                 constraints[var] = (
-                    self.data[var].min(),
-                    self.data[var].max()
+                    float(self.data[var].min()),
+                    float(self.data[var].max())
                 )
-        
-        # Simple grid search optimization
-        best_settings = {}
-        best_outcome = float('-inf') if 'max' in objective.lower() else float('inf')
-        baseline = self.data[self.target].mean()
-        
-        # Grid search
+
         from itertools import product
-        
+
         grids = {}
         for var in vars_to_optimize:
             low, high = constraints[var]
-            grids[var] = np.linspace(low, high, 5)
-        
+            if low > high:
+                raise ValueError(f"Constraint for '{var}' has min above max")
+            grids[var] = np.linspace(low, high, grid_points)
+
+        baseline = float(self.data[self.target].mean())
+        best_settings: Dict[str, float] = {}
+        best_outcome = float('-inf') if maximize else float('inf')
+
         for values in product(*grids.values()):
-            settings = dict(zip(vars_to_optimize, values))
-            
-            # Predict outcome under intervention
-            data_intervened = self.data.copy()
-            for var, val in settings.items():
-                data_intervened[var] = val
-            
-            outcome = self._scm.predict(data_intervened, self.target).mean()
-            
-            if 'max' in objective.lower():
-                if outcome > best_outcome:
-                    best_outcome = outcome
-                    best_settings = settings
-            else:
-                if outcome < best_outcome:
-                    best_outcome = outcome
-                    best_settings = settings
-        
+            settings = {v: float(x) for v, x in zip(vars_to_optimize, values)}
+            outcome = float(
+                self._scm.counterfactual(intervention=settings, data=self.data)[self.target].mean()
+            )
+            if (outcome > best_outcome) if maximize else (outcome < best_outcome):
+                best_outcome = outcome
+                best_settings = settings
+
         return OptimalPolicy(
             objective=objective,
             settings=best_settings,
@@ -766,7 +945,7 @@ class CausalSimulator:
             improvement=best_outcome - baseline,
             constraints=constraints
         )
-    
+
     def plot_graph(self, ax=None, figsize=(12, 8)):
         """
         Visualize the learned causal graph.
