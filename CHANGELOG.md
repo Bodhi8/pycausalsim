@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Changed: experiment analysis rewritten and tested for error rates
+- `matching` declared an effect in 27% of simulated experiments that had none: its
+  standard error ignored that controls are reused. It also estimated the effect on
+  the treated while labelling it the average effect. It now matches in both
+  directions, corrects the remaining covariate gap, and uses the Abadie-Imbens
+  standard error.
+- `ols` is now the interacted regression of Lin (2013) with robust standard errors,
+  and `ipw` and `dr` use unpenalised models. No estimator resamples any more, so
+  results are deterministic and the global NumPy random state is not touched.
+- `difference` uses Welch's test, and warns when the groups differ on a covariate
+  by more than randomisation would explain.
+- Poor overlap (estimated treatment probabilities below 1% or above 99%) is
+  reported instead of silently clipped.
+- The treatment column must be coded 0/1. Other values were silently left out of
+  some estimators and kept in others. Rows with missing values are dropped with a
+  warning.
+- `analyze_heterogeneity` labels binned segments with their ranges, in order, no
+  longer modifies the data, accepts text categories, reports segments it leaves
+  out, and tests whether the effect is the same across the segments shown (the old
+  test assumed a straight-line trend and failed on categories).
+- `simulate_longterm` added random noise to an assumed decay curve. It is now a
+  deterministic projection that carries the confidence interval forward, and is
+  documented as a what-if under the decay rate you supply.
+- `power_analysis` uses the within-group spread and rejects a zero effect size.
+- New: `balance_table()`, `check_sample_ratio()`, `alpha` on `estimate_effect`.
+
 ### Changed: marketing attribution rewritten and tested against known channel effects
 - `shapley` valued a set of channels by the raw conversion rate of users who saw
   them, so baseline conversions and the effect of co-occurring channels were

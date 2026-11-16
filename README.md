@@ -128,12 +128,26 @@ nothing about diminishing returns.
 ```python
 from pycausalsim import ExperimentAnalysis
 
-exp = ExperimentAnalysis(data, treatment='new_feature', outcome='engagement')
-effect = exp.estimate_effect(method='dr')  # Doubly robust estimator
+exp = ExperimentAnalysis(
+    data, treatment='new_feature', outcome='engagement',
+    covariates=['user_tenure', 'activity_level'],
+)
+exp.check_sample_ratio()                   # is the split what was intended?
+exp.balance_table()                        # do the groups look alike?
+effect = exp.estimate_effect(method='dr')  # doubly robust estimate of the ATE
 
-# Check for heterogeneous effects
-het = exp.analyze_heterogeneity(covariates=['user_tenure', 'activity_level'])
+# Does the effect differ across segments?
+het = exp.analyze_heterogeneity(covariates=['user_tenure'])
+
+exp.power_analysis(effect_size=0.1)        # users per group for the next test
 ```
+
+For a randomised test, `difference` is unbiased and `ols` or `dr` are usually
+more precise. When treatment was not randomised, `ols`, `ipw`, `dr` and
+`matching` adjust for the covariates you pass and are only as good as the
+assumption that those cover everything driving both treatment and outcome.
+The tests check each method's false-positive rate and interval coverage on
+simulated data.
 
 ### 6. Uplift Modeling
 

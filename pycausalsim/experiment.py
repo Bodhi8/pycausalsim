@@ -12,18 +12,31 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 """
-Experiment Analysis with Causal Inference.
+Experiment analysis.
 
-Analyze A/B tests with proper causal inference methods including
-heterogeneous treatment effects and long-term impact simulation.
+Estimates the average treatment effect (ATE) of a binary treatment, looks for
+differences in the effect across segments, and sizes experiments.
+
+Which estimator to use
+----------------------
+- Randomised experiment: ``difference`` is unbiased. ``ols`` and ``dr`` are also
+  unbiased and usually more precise when covariates predict the outcome.
+- Treatment not randomised: ``ols``, ``ipw``, ``dr`` and ``matching`` adjust for
+  the covariates you pass. They are only as good as the assumption that those
+  covariates include everything that drives both treatment and outcome.
+  ``difference`` is biased in this case.
+
+Every method reports the ATE with a standard error from a formula (no
+resampling), so results are deterministic.
 """
 
-from typing import Dict, List, Optional, Union, Tuple, Any
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+import warnings
+
 import numpy as np
 import pandas as pd
 from scipy import stats
-from dataclasses import dataclass
-import warnings
 
 
 @dataclass
@@ -37,47 +50,54 @@ class ExperimentEffect:
     method: str
     n_treated: int
     n_control: int
-    
+    alpha: float = 0.05
+    estimand: str = "ATE"
+
     def summary(self) -> str:
         lines = [
             "Treatment Effect Estimate",
             "=" * 40,
             f"Method: {self.method}",
-            f"Estimate: {self.estimate:.4f}",
-            f"95% CI: [{self.ci_lower:.4f}, {self.ci_upper:.4f}]",
+            f"Estimate ({self.estimand}): {self.estimate:.4f}",
+            f"{1 - self.alpha:.0%} CI: [{self.ci_lower:.4f}, {self.ci_upper:.4f}]",
             f"Std Error: {self.std_error:.4f}",
             f"P-value: {self.p_value:.4f}",
-            f"Significant: {'Yes' if self.p_value < 0.05 else 'No'}",
+            f"Significant at {self.alpha:g}: {'Yes' if self.p_value < self.alpha else 'No'}",
             "",
             f"Treated: {self.n_treated}",
             f"Control: {self.n_control}",
         ]
         return "\n".join(lines)
-    
+
     def __repr__(self) -> str:
         return f"ExperimentEffect(estimate={self.estimate:.4f}, p={self.p_value:.4f})"
 
 
 @dataclass
 class HeterogeneousEffects:
-    """Results from heterogeneous treatment effect analysis."""
+    """Treatment effects by segment of one covariate.
+
+    ``segments`` and ``segment_cis`` are keyed by segment label, in order.
+    ``interaction_pvalue`` tests whether the effect is the same in every
+    segment. ``segment_sizes`` gives the number of rows in each.
+    """
     covariate: str
     segments: Dict[str, float]
     segment_cis: Dict[str, Tuple[float, float]]
     interaction_pvalue: float
-    
+    segment_sizes: Optional[Dict[str, int]] = None
+
     def plot(self, ax=None):
         """Plot heterogeneous effects."""
         import matplotlib.pyplot as plt
-        
+
         if ax is None:
             fig, ax = plt.subplots(figsize=(10, 6))
-        
+
         segments = list(self.segments.keys())
         effects = list(self.segments.values())
-        errors = [(self.segment_cis[s][1] - self.segment_cis[s][0]) / 2 
-                  for s in segments]
-        
+        errors = [(self.segment_cis[s][1] - self.segment_cis[s][0]) / 2 for s in segments]
+
         x = range(len(segments))
         ax.bar(x, effects, yerr=errors, capsize=5, alpha=0.7)
         ax.set_xticks(x)
@@ -86,42 +106,41 @@ class HeterogeneousEffects:
         ax.set_xlabel(self.covariate)
         ax.set_ylabel('Treatment Effect')
         ax.set_title(f'Heterogeneous Effects by {self.covariate}')
-        
         return ax
 
 
 class ExperimentAnalysis:
     """
-    Analyze A/B tests with causal inference methods.
-    
-    Goes beyond simple t-tests to provide:
-    - Doubly robust estimation
-    - Heterogeneous treatment effects
-    - Long-term impact simulation
-    - Covariate adjustment
-    
+    Analyze an A/B test or a treated-versus-untreated comparison.
+
     Parameters
     ----------
     data : pd.DataFrame
-        Experiment data
+        One row per unit.
     treatment : str
-        Name of treatment assignment column
+        Treatment column, coded 0/1 (or boolean).
     outcome : str
-        Name of outcome column
+        Numeric outcome column.
     covariates : list of str, optional
-        Covariates for adjustment
-        
+        Numeric pre-treatment covariates used for adjustment. Never include a
+        variable that the treatment could have affected.
+    random_state : int, optional
+        Kept for compatibility. Every estimator is deterministic.
+
+    Rows with a missing value in any of these columns are dropped, with a warning.
+
     Examples
     --------
     >>> exp = ExperimentAnalysis(
     ...     data=ab_test_data,
     ...     treatment='new_feature',
-    ...     outcome='engagement'
+    ...     outcome='engagement',
+    ...     covariates=['user_tenure']
     ... )
     >>> effect = exp.estimate_effect(method='dr')
     >>> het = exp.analyze_heterogeneity(covariates=['user_tenure'])
     """
-    
+
     def __init__(
         self,
         data: pd.DataFrame,
@@ -130,488 +149,468 @@ class ExperimentAnalysis:
         covariates: Optional[List[str]] = None,
         random_state: Optional[int] = None
     ):
-        self.data = data.copy()
+        if not isinstance(data, pd.DataFrame):
+            raise TypeError("data must be a pandas DataFrame")
         self.treatment = treatment
         self.outcome = outcome
-        self.covariates = covariates or []
+        self.covariates = list(covariates or [])
         self.random_state = random_state
-        
-        if random_state is not None:
-            np.random.seed(random_state)
-        
+        self.data = data.copy()
         self._validate_inputs()
-        
-        # Compute basic stats
+
         self._treated = self.data[self.data[treatment] == 1]
         self._control = self.data[self.data[treatment] == 0]
-    
+
     def _validate_inputs(self):
-        """Validate inputs."""
         if self.treatment not in self.data.columns:
             raise ValueError(f"Treatment '{self.treatment}' not found")
-        
         if self.outcome not in self.data.columns:
             raise ValueError(f"Outcome '{self.outcome}' not found")
-        
         for cov in self.covariates:
             if cov not in self.data.columns:
                 raise ValueError(f"Covariate '{cov}' not found")
-    
-    def estimate_effect(
-        self,
-        method: str = 'difference',
-        **kwargs
-    ) -> ExperimentEffect:
+            if cov in (self.treatment, self.outcome):
+                raise ValueError(f"'{cov}' cannot be both a covariate and the "
+                                 "treatment or outcome")
+
+        used = [self.treatment, self.outcome] + self.covariates
+        missing = self.data[used].isna().any(axis=1)
+        if missing.any():
+            warnings.warn(
+                f"Dropped {int(missing.sum())} of {len(self.data)} rows with missing "
+                "values in the treatment, outcome or covariates.",
+                UserWarning, stacklevel=3
+            )
+            self.data = self.data.loc[~missing].copy()
+
+        values = set(pd.unique(self.data[self.treatment]))
+        if not values <= {0, 1, True, False}:
+            raise ValueError(
+                f"Treatment '{self.treatment}' must be coded 0/1; found values "
+                f"{sorted(map(str, values))[:6]}"
+            )
+        self.data[self.treatment] = self.data[self.treatment].astype(int)
+        for col in [self.outcome] + self.covariates:
+            if not pd.api.types.is_numeric_dtype(self.data[col]):
+                raise ValueError(f"Column '{col}' must be numeric")
+        counts = self.data[self.treatment].value_counts()
+        if counts.get(1, 0) < 2 or counts.get(0, 0) < 2:
+            raise ValueError("Need at least two treated and two control rows")
+
+    # ------------------------------------------------------------------
+    # Shared pieces
+    # ------------------------------------------------------------------
+
+    def _arrays(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        X = self.data[self.covariates].to_numpy(dtype=float)
+        T = self.data[self.treatment].to_numpy(dtype=float)
+        Y = self.data[self.outcome].to_numpy(dtype=float)
+        return X, T, Y
+
+    def _result(self, estimate, se, method, alpha, df=None) -> ExperimentEffect:
+        se = float(se)
+        if se > 0:
+            dist = stats.norm if df is None else stats.t(df)
+            critical = dist.ppf(1 - alpha / 2)
+            p_value = float(2 * dist.sf(abs(estimate) / se))
+        else:
+            critical, p_value = 0.0, (1.0 if estimate == 0 else 0.0)
+        return ExperimentEffect(
+            estimate=float(estimate),
+            ci_lower=float(estimate - critical * se),
+            ci_upper=float(estimate + critical * se),
+            p_value=p_value,
+            std_error=se,
+            method=method,
+            n_treated=len(self._treated),
+            n_control=len(self._control),
+            alpha=alpha,
+        )
+
+    def _propensity(self, X: np.ndarray, T: np.ndarray) -> np.ndarray:
+        """Estimated probability of treatment given the covariates."""
+        from sklearn.linear_model import LogisticRegression
+        scale = X.std(axis=0)
+        scale[scale == 0] = 1.0
+        Z = (X - X.mean(axis=0)) / scale
+        model = LogisticRegression(C=1e6, max_iter=2000).fit(Z, T.astype(int))
+        e = model.predict_proba(Z)[:, 1]
+        extreme = float(np.mean((e < 0.01) | (e > 0.99)))
+        if extreme > 0:
+            warnings.warn(
+                f"{extreme:.1%} of rows have an estimated treatment probability "
+                "below 1% or above 99%: for them there is almost no comparable "
+                "unit in the other group. Their weights are capped, and the "
+                "estimate leans on the model. Consider restricting the population.",
+                UserWarning, stacklevel=4
+            )
+        return np.clip(e, 0.01, 0.99)
+
+    @staticmethod
+    def _ols_fit(A: np.ndarray, y: np.ndarray) -> np.ndarray:
+        return np.linalg.lstsq(A, y, rcond=None)[0]
+
+    def _outcome_predictions(self, X, T, Y) -> Tuple[np.ndarray, np.ndarray]:
+        """Linear outcome model fitted separately in each group, predicted for all."""
+        A = np.column_stack([np.ones(len(X)), X])
+        mu1 = A @ self._ols_fit(A[T == 1], Y[T == 1])
+        mu0 = A @ self._ols_fit(A[T == 0], Y[T == 0])
+        return mu1, mu0
+
+    # ------------------------------------------------------------------
+    # Estimators
+    # ------------------------------------------------------------------
+
+    def estimate_effect(self, method: str = 'difference', alpha: float = 0.05,
+                        **kwargs) -> ExperimentEffect:
         """
-        Estimate average treatment effect.
-        
+        Estimate the average treatment effect.
+
         Parameters
         ----------
         method : str
-            Estimation method:
-            - 'difference': Simple difference in means
-            - 'ols': OLS regression with covariates
-            - 'ipw': Inverse probability weighting
-            - 'dr': Doubly robust (AIPW)
-            - 'matching': Propensity score matching
-            
+            - 'difference': difference in means (Welch). For randomised data.
+            - 'ols': regression adjustment with treatment-covariate interactions
+              (Lin, 2013) and robust standard errors.
+            - 'ipw': inverse probability weighting (normalised weights).
+            - 'dr' / 'aipw': doubly robust. Consistent if either the propensity
+              model or the outcome model is right.
+            - 'matching': nearest-neighbour matching on the propensity score, in
+              both directions, bias-corrected, with the Abadie-Imbens standard error.
+              ``n_neighbors`` (default 5) sets the number of matches.
+
+            Without covariates every method reduces to 'difference'.
+        alpha : float
+            The interval has level ``1 - alpha``.
+
         Returns
         -------
         ExperimentEffect
-            Treatment effect estimate with confidence interval
         """
         methods = {
             'difference': self._difference_in_means,
             'ols': self._ols_estimator,
             'ipw': self._ipw_estimator,
             'dr': self._doubly_robust,
-            'aipw': self._doubly_robust,  # Alias
+            'aipw': self._doubly_robust,
             'matching': self._matching_estimator,
         }
-        
-        if method.lower() not in methods:
-            raise ValueError(f"Unknown method: {method}")
-        
-        return methods[method.lower()](**kwargs)
-    
-    def _difference_in_means(self, **kwargs) -> ExperimentEffect:
-        """Simple difference in means estimator."""
-        y1 = self._treated[self.outcome].values
-        y0 = self._control[self.outcome].values
-        
-        ate = y1.mean() - y0.mean()
-        
-        # Standard error
-        var1 = y1.var() / len(y1)
-        var0 = y0.var() / len(y0)
-        se = np.sqrt(var1 + var0)
-        
-        # Confidence interval
-        ci_lower = ate - 1.96 * se
-        ci_upper = ate + 1.96 * se
-        
-        # P-value (two-sided)
-        t_stat = ate / se if se > 0 else 0
-        df = len(y1) + len(y0) - 2
-        p_value = 2 * (1 - stats.t.cdf(abs(t_stat), df))
-        
-        return ExperimentEffect(
-            estimate=ate,
-            ci_lower=ci_lower,
-            ci_upper=ci_upper,
-            p_value=p_value,
-            std_error=se,
-            method='difference_in_means',
-            n_treated=len(y1),
-            n_control=len(y0)
-        )
-    
-    def _ols_estimator(self, **kwargs) -> ExperimentEffect:
-        """OLS regression with covariate adjustment."""
-        from sklearn.linear_model import LinearRegression
-        
-        # Build design matrix
-        X_vars = [self.treatment] + self.covariates
-        X = self.data[X_vars].values
-        y = self.data[self.outcome].values
-        
-        # Fit OLS
-        model = LinearRegression()
-        model.fit(X, y)
-        
-        # Treatment effect is coefficient on treatment
-        ate = model.coef_[0]
-        
-        # Bootstrap for standard error
-        n_boot = 500
-        boot_effects = []
-        n = len(self.data)
-        
-        for _ in range(n_boot):
-            idx = np.random.choice(n, size=n, replace=True)
-            X_boot = X[idx]
-            y_boot = y[idx]
-            
-            model_boot = LinearRegression()
-            model_boot.fit(X_boot, y_boot)
-            boot_effects.append(model_boot.coef_[0])
-        
-        se = np.std(boot_effects)
-        ci_lower, ci_upper = np.percentile(boot_effects, [2.5, 97.5])
-        
-        t_stat = ate / se if se > 0 else 0
-        p_value = 2 * (1 - stats.norm.cdf(abs(t_stat)))
-        
-        return ExperimentEffect(
-            estimate=ate,
-            ci_lower=ci_lower,
-            ci_upper=ci_upper,
-            p_value=p_value,
-            std_error=se,
-            method='ols',
-            n_treated=len(self._treated),
-            n_control=len(self._control)
-        )
-    
-    def _ipw_estimator(self, **kwargs) -> ExperimentEffect:
-        """Inverse probability weighting estimator."""
-        from sklearn.linear_model import LogisticRegression
-        
-        if not self.covariates:
-            # Without covariates, IPW = difference in means
-            return self._difference_in_means()
-        
-        X = self.data[self.covariates].values
-        T = self.data[self.treatment].values
-        Y = self.data[self.outcome].values
-        
-        # Estimate propensity scores
-        ps_model = LogisticRegression(random_state=self.random_state)
-        ps_model.fit(X, T)
-        propensity = ps_model.predict_proba(X)[:, 1]
-        
-        # Clip propensity scores for stability
-        propensity = np.clip(propensity, 0.01, 0.99)
-        
-        # IPW estimator
-        weights_treated = T / propensity
-        weights_control = (1 - T) / (1 - propensity)
-        
-        y1_weighted = np.sum(weights_treated * Y) / np.sum(weights_treated)
-        y0_weighted = np.sum(weights_control * Y) / np.sum(weights_control)
-        
-        ate = y1_weighted - y0_weighted
-        
-        # Bootstrap for inference
-        n_boot = 500
-        boot_effects = []
-        n = len(self.data)
-        
-        for _ in range(n_boot):
-            idx = np.random.choice(n, size=n, replace=True)
-            X_b, T_b, Y_b = X[idx], T[idx], Y[idx]
-            
-            ps_b = LogisticRegression(random_state=self.random_state)
-            ps_b.fit(X_b, T_b)
-            prop_b = np.clip(ps_b.predict_proba(X_b)[:, 1], 0.01, 0.99)
-            
-            w1 = T_b / prop_b
-            w0 = (1 - T_b) / (1 - prop_b)
-            
-            y1_w = np.sum(w1 * Y_b) / np.sum(w1)
-            y0_w = np.sum(w0 * Y_b) / np.sum(w0)
-            boot_effects.append(y1_w - y0_w)
-        
-        se = np.std(boot_effects)
-        ci_lower, ci_upper = np.percentile(boot_effects, [2.5, 97.5])
-        p_value = 2 * (1 - stats.norm.cdf(abs(ate / se))) if se > 0 else 1.0
-        
-        return ExperimentEffect(
-            estimate=ate,
-            ci_lower=ci_lower,
-            ci_upper=ci_upper,
-            p_value=p_value,
-            std_error=se,
-            method='ipw',
-            n_treated=len(self._treated),
-            n_control=len(self._control)
-        )
-    
-    def _doubly_robust(self, **kwargs) -> ExperimentEffect:
-        """
-        Doubly robust (AIPW) estimator.
-        
-        Consistent if either propensity score OR outcome model is correct.
-        """
-        from sklearn.linear_model import LogisticRegression, Ridge
-        
-        if not self.covariates:
-            return self._difference_in_means()
-        
-        X = self.data[self.covariates].values
-        T = self.data[self.treatment].values
-        Y = self.data[self.outcome].values
+        key = str(method).lower()
+        if key not in methods:
+            raise ValueError(f"Unknown method: {method}. Choose from {sorted(methods)}")
+        if not 0 < alpha < 1:
+            raise ValueError("alpha must be between 0 and 1")
+        if key != 'difference' and not self.covariates:
+            return self._difference_in_means(alpha=alpha, check_balance=False)
+        return methods[key](alpha=alpha, **kwargs)
+
+    def _difference_in_means(self, alpha: float = 0.05, check_balance: bool = True,
+                             **kwargs) -> ExperimentEffect:
+        y1 = self._treated[self.outcome].to_numpy(dtype=float)
+        y0 = self._control[self.outcome].to_numpy(dtype=float)
+        v1, v0 = y1.var(ddof=1) / len(y1), y0.var(ddof=1) / len(y0)
+        se = np.sqrt(v1 + v0)
+        if se > 0:
+            df = (v1 + v0) ** 2 / (v1 ** 2 / (len(y1) - 1) + v0 ** 2 / (len(y0) - 1))
+        else:
+            df = len(y1) + len(y0) - 2
+
+        if check_balance and self.covariates:
+            smd = self.balance_table()['std_mean_diff'].abs()
+            if smd.max() > 0.25:
+                warnings.warn(
+                    f"The groups differ on {smd.idxmax()} (standardised difference "
+                    f"{smd.max():.2f}), which is unusual for a randomised experiment. "
+                    "The difference in means is biased if treatment was not "
+                    "randomised; use method='dr' to adjust for the covariates.",
+                    UserWarning, stacklevel=3
+                )
+        return self._result(y1.mean() - y0.mean(), se, 'difference_in_means', alpha, df=df)
+
+    def _ols_estimator(self, alpha: float = 0.05, **kwargs) -> ExperimentEffect:
+        X, T, Y = self._arrays()
         n = len(Y)
-        
-        # Estimate propensity scores
-        ps_model = LogisticRegression(random_state=self.random_state)
-        ps_model.fit(X, T)
-        propensity = np.clip(ps_model.predict_proba(X)[:, 1], 0.01, 0.99)
-        
-        # Estimate outcome models
-        # mu1(x) = E[Y | X, T=1]
-        # mu0(x) = E[Y | X, T=0]
-        
-        treated_idx = T == 1
-        control_idx = T == 0
-        
-        mu1_model = Ridge(alpha=1.0)
-        mu1_model.fit(X[treated_idx], Y[treated_idx])
-        mu1 = mu1_model.predict(X)
-        
-        mu0_model = Ridge(alpha=1.0)
-        mu0_model.fit(X[control_idx], Y[control_idx])
-        mu0 = mu0_model.predict(X)
-        
-        # AIPW estimator
-        # tau_AIPW = 1/n * sum[ mu1(X) - mu0(X) + T(Y - mu1(X))/e(X) - (1-T)(Y - mu0(X))/(1-e(X)) ]
-        
-        term1 = mu1 - mu0
-        term2 = T * (Y - mu1) / propensity
-        term3 = (1 - T) * (Y - mu0) / (1 - propensity)
-        
-        psi = term1 + term2 - term3
-        ate = np.mean(psi)
-        
-        # Influence function-based standard error
-        se = np.std(psi) / np.sqrt(n)
-        
-        ci_lower = ate - 1.96 * se
-        ci_upper = ate + 1.96 * se
-        
-        t_stat = ate / se if se > 0 else 0
-        p_value = 2 * (1 - stats.norm.cdf(abs(t_stat)))
-        
-        return ExperimentEffect(
-            estimate=ate,
-            ci_lower=ci_lower,
-            ci_upper=ci_upper,
-            p_value=p_value,
-            std_error=se,
-            method='doubly_robust',
-            n_treated=int(treated_idx.sum()),
-            n_control=int(control_idx.sum())
-        )
-    
-    def _matching_estimator(self, n_neighbors: int = 5, **kwargs) -> ExperimentEffect:
-        """Propensity score matching estimator."""
-        from sklearn.linear_model import LogisticRegression
+        Xc = X - X.mean(axis=0)
+        A = np.column_stack([np.ones(n), T, Xc, Xc * T[:, None]])
+        gram_inv = np.linalg.pinv(A.T @ A)
+        beta = gram_inv @ A.T @ Y
+        residual = Y - A @ beta
+        leverage = np.clip(np.einsum('ij,jk,ik->i', A, gram_inv, A), 0, 1 - 1e-8)
+        meat = (A * (residual ** 2 / (1 - leverage))[:, None]).T @ A        # HC2
+        variance = (gram_inv @ meat @ gram_inv)[1, 1]
+        # The covariate means are estimated too; when the effect varies with the
+        # covariates that adds to the uncertainty about the average effect.
+        k = X.shape[1]
+        slope = beta[2 + k:]
+        variance += float(slope @ np.atleast_2d(np.cov(X, rowvar=False)) @ slope) / n
+        return self._result(beta[1], np.sqrt(variance), 'ols', alpha)
+
+    def _ipw_estimator(self, alpha: float = 0.05, **kwargs) -> ExperimentEffect:
+        X, T, Y = self._arrays()
+        n = len(Y)
+        e = self._propensity(X, T)
+        w1, w0 = T / e, (1 - T) / (1 - e)
+        mean1, mean0 = np.sum(w1 * Y) / np.sum(w1), np.sum(w0 * Y) / np.sum(w0)
+        influence = w1 * (Y - mean1) / np.mean(w1) - w0 * (Y - mean0) / np.mean(w0)
+        # The weights are estimated, which makes the estimate more precise than
+        # known weights would. Removing the part of the influence explained by the
+        # propensity model's score accounts for that (Lunceford and Davidian, 2004).
+        score = (T - e)[:, None] * np.column_stack([np.ones(n), X - X.mean(axis=0)])
+        influence = influence - score @ self._ols_fit(score, influence)
+        return self._result(mean1 - mean0, influence.std(ddof=1) / np.sqrt(n), 'ipw', alpha)
+
+    def _doubly_robust(self, alpha: float = 0.05, **kwargs) -> ExperimentEffect:
+        X, T, Y = self._arrays()
+        n = len(Y)
+        e = self._propensity(X, T)
+        mu1, mu0 = self._outcome_predictions(X, T, Y)
+        psi = mu1 - mu0 + T * (Y - mu1) / e - (1 - T) * (Y - mu0) / (1 - e)
+        return self._result(psi.mean(), psi.std(ddof=1) / np.sqrt(n), 'doubly_robust', alpha)
+
+    def _matching_estimator(self, n_neighbors: int = 5, alpha: float = 0.05,
+                            **kwargs) -> ExperimentEffect:
         from sklearn.neighbors import NearestNeighbors
-        
-        if not self.covariates:
-            return self._difference_in_means()
-        
-        X = self.data[self.covariates].values
-        T = self.data[self.treatment].values
-        Y = self.data[self.outcome].values
-        
-        # Estimate propensity scores
-        ps_model = LogisticRegression(random_state=self.random_state)
-        ps_model.fit(X, T)
-        propensity = ps_model.predict_proba(X)[:, 1].reshape(-1, 1)
-        
-        treated_idx = np.where(T == 1)[0]
-        control_idx = np.where(T == 0)[0]
-        
-        # Match treated to control
-        nn = NearestNeighbors(n_neighbors=n_neighbors)
-        nn.fit(propensity[control_idx])
-        
-        matched_effects = []
-        for i in treated_idx:
-            _, indices = nn.kneighbors(propensity[i].reshape(1, -1))
-            matched_control_idx = control_idx[indices[0]]
-            
-            y_treated = Y[i]
-            y_control = Y[matched_control_idx].mean()
-            matched_effects.append(y_treated - y_control)
-        
-        ate = np.mean(matched_effects)
-        se = np.std(matched_effects) / np.sqrt(len(matched_effects))
-        
-        ci_lower = ate - 1.96 * se
-        ci_upper = ate + 1.96 * se
-        
-        t_stat = ate / se if se > 0 else 0
-        p_value = 2 * (1 - stats.norm.cdf(abs(t_stat)))
-        
-        return ExperimentEffect(
-            estimate=ate,
-            ci_lower=ci_lower,
-            ci_upper=ci_upper,
-            p_value=p_value,
-            std_error=se,
-            method='matching',
-            n_treated=len(treated_idx),
-            n_control=len(control_idx)
-        )
-    
+
+        if n_neighbors < 1:
+            raise ValueError("n_neighbors must be at least 1")
+        X, T, Y = self._arrays()
+        n = len(Y)
+        e = self._propensity(X, T)
+        score = np.log(e / (1 - e)).reshape(-1, 1)
+        groups = {1: np.where(T == 1)[0], 0: np.where(T == 0)[0]}
+        M = min(n_neighbors, len(groups[1]), len(groups[0]))
+
+        # Linear outcome models, used only to correct for the remaining covariate
+        # gap between a unit and its matches (Abadie and Imbens, 2011).
+        mu = dict(zip((1, 0), self._outcome_predictions(X, T, Y)))
+
+        imputed = {1: np.empty(n), 0: np.empty(n)}     # Y(1) and Y(0) for every unit
+        times_used = np.zeros(n)
+        sigma2 = np.empty(n)
+        for own, other in ((1, 0), (0, 1)):
+            idx_own, idx_other = groups[own], groups[other]
+            imputed[own][idx_own] = Y[idx_own]
+            _, nearest = NearestNeighbors(n_neighbors=M).fit(score[idx_other]).kneighbors(
+                score[idx_own])
+            matched = idx_other[nearest]
+            imputed[other][idx_own] = (
+                Y[matched] - mu[other][matched] + mu[other][idx_own][:, None]).mean(axis=1)
+            np.add.at(times_used, matched.ravel(), 1.0)
+            # Outcome variance at each unit, from its nearest neighbours in its own group
+            J = min(M, len(idx_own) - 1)
+            _, same = NearestNeighbors(n_neighbors=J + 1).fit(score[idx_own]).kneighbors(
+                score[idx_own])
+            neighbours = Y[idx_own[same[:, 1:]]]
+            sigma2[idx_own] = J / (J + 1) * (Y[idx_own] - neighbours.mean(axis=1)) ** 2
+
+        unit_effect = imputed[1] - imputed[0]
+        ate = unit_effect.mean()
+        k = times_used / M
+        variance = (np.sum((unit_effect - ate) ** 2)
+                    + np.sum((k ** 2 + (2 * M - 1) / M * k) * sigma2)) / n ** 2
+        return self._result(ate, np.sqrt(variance), 'matching', alpha)
+
+    # ------------------------------------------------------------------
+    # Diagnostics
+    # ------------------------------------------------------------------
+
+    def balance_table(self) -> pd.DataFrame:
+        """
+        Covariate balance between the groups.
+
+        One row per covariate: the group means and the standardised mean
+        difference. In a randomised experiment these differences should be
+        small; an absolute value above about 0.1 deserves a look.
+        """
+        rows = {}
+        for cov in self.covariates:
+            a = self._treated[cov].to_numpy(dtype=float)
+            b = self._control[cov].to_numpy(dtype=float)
+            pooled = np.sqrt((a.var(ddof=1) + b.var(ddof=1)) / 2)
+            rows[cov] = {
+                'mean_treated': a.mean(),
+                'mean_control': b.mean(),
+                'std_mean_diff': (a.mean() - b.mean()) / pooled if pooled > 0 else 0.0,
+            }
+        return pd.DataFrame.from_dict(
+            rows, orient='index', columns=['mean_treated', 'mean_control', 'std_mean_diff'])
+
+    def check_sample_ratio(self, expected_treated_share: float = 0.5) -> float:
+        """
+        Sample ratio mismatch check. Returns the p-value of a chi-square test
+        that the observed split matches the intended one. A very small value
+        (commonly below 0.001) points to a problem in assignment or logging,
+        and the experiment's results should not be trusted until it is explained.
+        """
+        if not 0 < expected_treated_share < 1:
+            raise ValueError("expected_treated_share must be between 0 and 1")
+        n1, n0 = len(self._treated), len(self._control)
+        total = n1 + n0
+        expected = [total * expected_treated_share, total * (1 - expected_treated_share)]
+        return float(stats.chisquare([n1, n0], expected).pvalue)
+
+    # ------------------------------------------------------------------
+    # Heterogeneity
+    # ------------------------------------------------------------------
+
     def analyze_heterogeneity(
         self,
         covariates: Optional[List[str]] = None,
-        n_quantiles: int = 4
+        n_quantiles: int = 4,
+        min_segment_size: int = 10,
+        alpha: float = 0.05,
     ) -> List[HeterogeneousEffects]:
         """
-        Analyze heterogeneous treatment effects.
-        
+        Treatment effect by segment.
+
+        A covariate with at most ``n_quantiles`` distinct values is used as is;
+        otherwise it is cut into ``n_quantiles`` equal-sized bins. Within each
+        segment the effect is the difference in means, which is valid when
+        treatment was randomised.
+
+        ``interaction_pvalue`` tests whether the effect is the same in every
+        segment shown. Looking at several covariates multiplies the chances of
+        a small p-value by luck; treat a single one as a lead, not a finding.
+
         Parameters
         ----------
         covariates : list of str, optional
-            Covariates to analyze heterogeneity on
+            Defaults to the covariates given at construction.
         n_quantiles : int
-            Number of quantiles for continuous covariates
-            
-        Returns
-        -------
-        list of HeterogeneousEffects
-            Heterogeneous effects for each covariate
+            Number of bins for a continuous covariate.
+        min_segment_size : int
+            Segments with fewer rows in either group are left out, with a warning.
+        alpha : float
+            Level of the segment intervals.
         """
-        covariates = covariates or self.covariates
+        covariates = list(covariates) if covariates is not None else self.covariates
+        if n_quantiles < 2:
+            raise ValueError("n_quantiles must be at least 2")
         results = []
-        
         for cov in covariates:
-            het = self._analyze_heterogeneity_single(cov, n_quantiles)
-            results.append(het)
-        
+            if cov not in self.data.columns:
+                raise ValueError(f"Covariate '{cov}' not found")
+            results.append(
+                self._analyze_heterogeneity_single(cov, n_quantiles, min_segment_size, alpha))
         return results
-    
-    def _analyze_heterogeneity_single(
-        self,
-        covariate: str,
-        n_quantiles: int
-    ) -> HeterogeneousEffects:
-        """Analyze heterogeneity on single covariate."""
-        original_covariate = covariate  # Remember original name
-        
-        # Determine if categorical or continuous
-        unique_vals = self.data[covariate].nunique()
-        
-        if unique_vals <= n_quantiles:
-            # Categorical: use actual values
-            segments = self.data[covariate].unique()
+
+    def _analyze_heterogeneity_single(self, covariate, n_quantiles, min_segment_size,
+                                      alpha) -> HeterogeneousEffects:
+        column = self.data[covariate]
+        keep = column.notna()
+        column = column[keep]
+        T = self.data.loc[keep, self.treatment].to_numpy()
+        Y = self.data.loc[keep, self.outcome].to_numpy(dtype=float)
+
+        if column.nunique() <= n_quantiles or not pd.api.types.is_numeric_dtype(column):
+            labels = column.astype(str)
+            try:
+                order = [str(v) for v in sorted(column.unique())]
+            except TypeError:
+                order = sorted(labels.unique())
         else:
-            # Continuous: create quantile bins
-            self.data['_temp_bin'] = pd.qcut(
-                self.data[covariate], 
-                q=n_quantiles, 
-                labels=False, 
-                duplicates='drop'
-            )
-            segments = self.data['_temp_bin'].unique()
-            covariate = '_temp_bin'
-        
-        segment_effects = {}
-        segment_cis = {}
-        
-        for seg in segments:
-            subset = self.data[self.data[covariate] == seg]
-            
-            if len(subset) < 10:
+            bins = pd.qcut(column, q=n_quantiles, duplicates='drop')
+            labels = bins.astype(str)
+            order = [str(c) for c in bins.cat.categories]
+        labels = labels.to_numpy()
+
+        effects: Dict[str, float] = {}
+        cis: Dict[str, Tuple[float, float]] = {}
+        sizes: Dict[str, int] = {}
+        skipped = []
+        for label in order:
+            mask = labels == label
+            y1, y0 = Y[mask & (T == 1)], Y[mask & (T == 0)]
+            if min(len(y1), len(y0)) < max(2, min_segment_size):
+                skipped.append(label)
                 continue
-            
-            treated = subset[subset[self.treatment] == 1][self.outcome]
-            control = subset[subset[self.treatment] == 0][self.outcome]
-            
-            if len(treated) > 0 and len(control) > 0:
-                effect = treated.mean() - control.mean()
-                se = np.sqrt(treated.var()/len(treated) + control.var()/len(control))
-                
-                segment_effects[str(seg)] = effect
-                segment_cis[str(seg)] = (effect - 1.96*se, effect + 1.96*se)
-        
-        # Clean up temp column
-        if '_temp_bin' in self.data.columns:
-            self.data.drop('_temp_bin', axis=1, inplace=True)
-        
-        # Test for interaction
-        interaction_pvalue = self._test_interaction(original_covariate)
-        
+            v1, v0 = y1.var(ddof=1) / len(y1), y0.var(ddof=1) / len(y0)
+            se = np.sqrt(v1 + v0)
+            effect = float(y1.mean() - y0.mean())
+            if se > 0:
+                df = (v1 + v0) ** 2 / (v1 ** 2 / (len(y1) - 1) + v0 ** 2 / (len(y0) - 1))
+                half = stats.t.ppf(1 - alpha / 2, df) * se
+            else:
+                half = 0.0
+            effects[label] = effect
+            cis[label] = (float(effect - half), float(effect + half))
+            sizes[label] = int(mask.sum())
+        if skipped:
+            warnings.warn(
+                f"Segments of {covariate} left out because a group has fewer than "
+                f"{max(2, min_segment_size)} rows: {skipped}",
+                UserWarning, stacklevel=4
+            )
+
         return HeterogeneousEffects(
-            covariate=original_covariate,
-            segments=segment_effects,
-            segment_cis=segment_cis,
-            interaction_pvalue=interaction_pvalue
+            covariate=covariate,
+            segments=effects,
+            segment_cis=cis,
+            interaction_pvalue=self._test_interaction(labels, T, Y, list(effects)),
+            segment_sizes=sizes,
         )
-    
-    def _test_interaction(self, covariate: str) -> float:
-        """Test for treatment-covariate interaction."""
-        from sklearn.linear_model import LinearRegression
-        
-        # Model with interaction
-        data = self.data.copy()
-        data['_interaction'] = data[self.treatment] * data[covariate]
-        
-        X_full = data[[self.treatment, covariate, '_interaction']].values
-        X_reduced = data[[self.treatment, covariate]].values
-        y = data[self.outcome].values
-        
-        # F-test for interaction term
-        model_full = LinearRegression().fit(X_full, y)
-        model_reduced = LinearRegression().fit(X_reduced, y)
-        
-        rss_full = np.sum((y - model_full.predict(X_full)) ** 2)
-        rss_reduced = np.sum((y - model_reduced.predict(X_reduced)) ** 2)
-        
-        n = len(y)
-        p_full = 3
-        p_reduced = 2
-        
-        f_stat = ((rss_reduced - rss_full) / (p_full - p_reduced)) / (rss_full / (n - p_full))
-        p_value = 1 - stats.f.cdf(f_stat, p_full - p_reduced, n - p_full)
-        
-        return p_value
-    
+
+    def _test_interaction(self, labels, T, Y, segments: List[str]) -> float:
+        """F-test that the treatment effect is the same in every segment."""
+        if len(segments) < 2:
+            return float('nan')
+        keep = np.isin(labels, segments)
+        labels, T, Y = labels[keep], T[keep].astype(float), Y[keep]
+        dummies = np.column_stack([(labels == s).astype(float) for s in segments])
+        reduced = np.column_stack([dummies, T])
+        full = np.column_stack([dummies, dummies * T[:, None]])
+        rss_reduced = np.sum((Y - reduced @ self._ols_fit(reduced, Y)) ** 2)
+        rss_full = np.sum((Y - full @ self._ols_fit(full, Y)) ** 2)
+        df1 = len(segments) - 1
+        df2 = len(Y) - full.shape[1]
+        if df2 <= 0 or rss_full <= 0:
+            return float('nan')
+        f_stat = ((rss_reduced - rss_full) / df1) / (rss_full / df2)
+        return float(stats.f.sf(f_stat, df1, df2))
+
+    # ------------------------------------------------------------------
+    # Projection and design
+    # ------------------------------------------------------------------
+
     def simulate_longterm(
         self,
         periods: int = 90,
-        decay_rate: float = 0.1
+        decay_rate: float = 0.1,
+        method: str = 'difference',
     ) -> pd.DataFrame:
         """
-        Simulate long-term treatment effects.
-        
-        Parameters
-        ----------
-        periods : int
-            Number of periods to simulate
-        decay_rate : float
-            Rate at which treatment effect decays
-            
+        Project the measured effect forward under an assumed decay.
+
+        This is a what-if calculation, not an estimate. The experiment measures
+        the effect during the test; how it fades afterwards is the
+        ``decay_rate`` you supply (the effect in period ``t`` is the measured
+        effect times ``exp(-decay_rate * t)``). Nothing in the data informs it.
+
         Returns
         -------
         pd.DataFrame
-            Simulated outcomes over time
+            ``period``, ``effect``, ``cumulative_effect``, and lower and upper
+            versions of both that carry the confidence interval of the measured
+            effect through the same decay.
         """
-        # Get initial effect
-        effect = self.estimate_effect()
-        initial_effect = effect.estimate
-        
-        # Simulate with decay
-        results = []
-        for t in range(periods):
-            # Effect with exponential decay
-            current_effect = initial_effect * np.exp(-decay_rate * t)
-            
-            # Add noise
-            noise = np.random.normal(0, effect.std_error)
-            
-            results.append({
-                'period': t,
-                'effect': current_effect + noise,
-                'cumulative_effect': sum(r['effect'] for r in results) + current_effect + noise
-            })
-        
-        return pd.DataFrame(results)
-    
+        if periods < 1:
+            raise ValueError("periods must be at least 1")
+        if decay_rate < 0:
+            raise ValueError("decay_rate must not be negative")
+        measured = self.estimate_effect(method=method)
+        t = np.arange(periods)
+        decay = np.exp(-decay_rate * t)
+        out = pd.DataFrame({'period': t})
+        for name, value in (('effect', measured.estimate),
+                            ('effect_lower', measured.ci_lower),
+                            ('effect_upper', measured.ci_upper)):
+            out[name] = value * decay
+        out['cumulative_effect'] = out['effect'].cumsum()
+        out['cumulative_lower'] = out['effect_lower'].cumsum()
+        out['cumulative_upper'] = out['effect_upper'].cumsum()
+        return out[['period', 'effect', 'cumulative_effect', 'effect_lower',
+                    'effect_upper', 'cumulative_lower', 'cumulative_upper']]
+
     def power_analysis(
         self,
         effect_size: float,
@@ -619,58 +618,46 @@ class ExperimentAnalysis:
         power: float = 0.8
     ) -> int:
         """
-        Compute required sample size for given effect size.
-        
-        Parameters
-        ----------
-        effect_size : float
-            Expected treatment effect
-        alpha : float
-            Significance level
-        power : float
-            Desired statistical power
-            
-        Returns
-        -------
-        int
-            Required sample size per group
+        Sample size per group needed to detect ``effect_size`` (in outcome
+        units) with a two-sided test, for two groups of equal size.
+
+        The outcome's spread is taken from this data, within groups, so the
+        treatment effect itself does not inflate it.
         """
-        # Pooled standard deviation
-        y = self.data[self.outcome].values
-        sigma = np.std(y)
-        
-        # Standardized effect size
-        d = effect_size / sigma
-        
-        # Required sample size per group
-        z_alpha = stats.norm.ppf(1 - alpha/2)
-        z_beta = stats.norm.ppf(power)
-        
-        n = 2 * ((z_alpha + z_beta) / d) ** 2
-        
-        return int(np.ceil(n))
-    
+        if effect_size == 0:
+            raise ValueError("effect_size must not be zero")
+        if not 0 < alpha < 1 or not 0 < power < 1:
+            raise ValueError("alpha and power must be between 0 and 1")
+        y1 = self._treated[self.outcome].to_numpy(dtype=float)
+        y0 = self._control[self.outcome].to_numpy(dtype=float)
+        pooled = ((len(y1) - 1) * y1.var(ddof=1) + (len(y0) - 1) * y0.var(ddof=1)) \
+            / (len(y1) + len(y0) - 2)
+        if pooled <= 0:
+            raise ValueError("The outcome does not vary, so a sample size cannot be computed")
+        z = stats.norm.ppf(1 - alpha / 2) + stats.norm.ppf(power)
+        return int(np.ceil(2 * pooled * (z / effect_size) ** 2))
+
     def summary(self) -> str:
         """Return experiment summary."""
         effect = self.estimate_effect()
-        
         lines = [
             "Experiment Analysis Summary",
             "=" * 50,
             f"Treatment: {self.treatment}",
             f"Outcome: {self.outcome}",
             "",
-            f"Treated group: n={len(self._treated)}, mean={self._treated[self.outcome].mean():.4f}",
-            f"Control group: n={len(self._control)}, mean={self._control[self.outcome].mean():.4f}",
+            f"Treated group: n={len(self._treated)}, "
+            f"mean={self._treated[self.outcome].mean():.4f}",
+            f"Control group: n={len(self._control)}, "
+            f"mean={self._control[self.outcome].mean():.4f}",
             "",
-            "Treatment Effect:",
+            "Treatment Effect (difference in means):",
             f"  Estimate: {effect.estimate:.4f}",
             f"  95% CI: [{effect.ci_lower:.4f}, {effect.ci_upper:.4f}]",
             f"  P-value: {effect.p_value:.4f}",
         ]
-        
         return "\n".join(lines)
-    
+
     def __repr__(self) -> str:
         return (f"ExperimentAnalysis(treatment='{self.treatment}', "
                 f"n_treated={len(self._treated)}, n_control={len(self._control)})")
