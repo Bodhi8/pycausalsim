@@ -1,0 +1,392 @@
+{
+ "version": "0.7.0",
+ "python": "3.13.18",
+ "discovery": {
+  "pc": {
+   "named": {
+    "chain a->b->c": {
+     "exact": true,
+     "missing_edges": 0,
+     "extra_edges": 0,
+     "adjacency_f1": 1.0,
+     "arrows": 0,
+     "wrong_arrows": 0,
+     "unsupported_arrows": 0,
+     "two_way_edges": 2,
+     "graph": {
+      "a": [
+       "b"
+      ],
+      "b": [
+       "a",
+       "c"
+      ],
+      "c": [
+       "b"
+      ]
+     },
+     "seconds": 0.0
+    },
+    "fork b<-a->c": {
+     "exact": true,
+     "missing_edges": 0,
+     "extra_edges": 0,
+     "adjacency_f1": 1.0,
+     "arrows": 0,
+     "wrong_arrows": 0,
+     "unsupported_arrows": 0,
+     "two_way_edges": 2,
+     "graph": {
+      "a": [
+       "b",
+       "c"
+      ],
+      "b": [
+       "a"
+      ],
+      "c": [
+       "a"
+      ]
+     },
+     "seconds": 0.0
+    },
+    "collider a->c<-b": {
+     "exact": true,
+     "missing_edges": 0,
+     "extra_edges": 0,
+     "adjacency_f1": 1.0,
+     "arrows": 2,
+     "wrong_arrows": 0,
+     "unsupported_arrows": 0,
+     "two_way_edges": 0,
+     "graph": {
+      "a": [],
+      "b": [],
+      "c": [
+       "a",
+       "b"
+      ]
+     },
+     "seconds": 0.0
+    },
+    "diamond": {
+     "exact": true,
+     "missing_edges": 0,
+     "extra_edges": 0,
+     "adjacency_f1": 1.0,
+     "arrows": 2,
+     "wrong_arrows": 0,
+     "unsupported_arrows": 0,
+     "two_way_edges": 2,
+     "graph": {
+      "a": [
+       "b",
+       "c"
+      ],
+      "b": [
+       "a"
+      ],
+      "c": [
+       "a"
+      ],
+      "d": [
+       "b",
+       "c"
+      ]
+     },
+     "seconds": 0.0
+    }
+   },
+   "random_5_node": {
+    "cases": 12,
+    "exact": 10,
+    "wrong_arrows": 3,
+    "unsupported_arrows": 0,
+    "arrows": 35,
+    "missing_edges": 1,
+    "extra_edges": 1,
+    "errors": 0
+   }
+  },
+  "ges": {
+   "named": {
+    "chain a->b->c": {
+     "exact": true,
+     "missing_edges": 0,
+     "extra_edges": 0,
+     "adjacency_f1": 1.0,
+     "arrows": 0,
+     "wrong_arrows": 0,
+     "unsupported_arrows": 0,
+     "two_way_edges": 2,
+     "graph": {
+      "a": [
+       "b"
+      ],
+      "b": [
+       "a",
+       "c"
+      ],
+      "c": [
+       "b"
+      ]
+     },
+     "seconds": 0.0
+    },
+    "fork b<-a->c": {
+     "exact": true,
+     "missing_edges": 0,
+     "extra_edges": 0,
+     "adjacency_f1": 1.0,
+     "arrows": 0,
+     "wrong_arrows": 0,
+     "unsupported_arrows": 0,
+     "two_way_edges": 2,
+     "graph": {
+      "a": [
+       "b",
+       "c"
+      ],
+      "b": [
+       "a"
+      ],
+      "c": [
+       "a"
+      ]
+     },
+     "seconds": 0.0
+    },
+    "collider a->c<-b": {
+     "exact": true,
+     "missing_edges": 0,
+     "extra_edges": 0,
+     "adjacency_f1": 1.0,
+     "arrows": 2,
+     "wrong_arrows": 0,
+     "unsupported_arrows": 0,
+     "two_way_edges": 0,
+     "graph": {
+      "a": [],
+      "b": [],
+      "c": [
+       "a",
+       "b"
+      ]
+     },
+     "seconds": 0.0
+    },
+    "diamond": {
+     "exact": true,
+     "missing_edges": 0,
+     "extra_edges": 0,
+     "adjacency_f1": 1.0,
+     "arrows": 2,
+     "wrong_arrows": 0,
+     "unsupported_arrows": 0,
+     "two_way_edges": 2,
+     "graph": {
+      "a": [
+       "b",
+       "c"
+      ],
+      "b": [
+       "a"
+      ],
+      "c": [
+       "a"
+      ],
+      "d": [
+       "b",
+       "c"
+      ]
+     },
+     "seconds": 0.0
+    }
+   },
+   "random_5_node": {
+    "cases": 12,
+    "exact": 11,
+    "wrong_arrows": 0,
+    "unsupported_arrows": 0,
+    "arrows": 29,
+    "missing_edges": 1,
+    "extra_edges": 1,
+    "errors": 0
+   }
+  },
+  "hybrid": {
+   "named": {
+    "chain a->b->c": {
+     "exact": true,
+     "missing_edges": 0,
+     "extra_edges": 0,
+     "adjacency_f1": 1.0,
+     "arrows": 0,
+     "wrong_arrows": 0,
+     "unsupported_arrows": 0,
+     "two_way_edges": 2,
+     "graph": {
+      "a": [
+       "b"
+      ],
+      "b": [
+       "a",
+       "c"
+      ],
+      "c": [
+       "b"
+      ]
+     },
+     "seconds": 0.0
+    },
+    "fork b<-a->c": {
+     "exact": true,
+     "missing_edges": 0,
+     "extra_edges": 0,
+     "adjacency_f1": 1.0,
+     "arrows": 0,
+     "wrong_arrows": 0,
+     "unsupported_arrows": 0,
+     "two_way_edges": 2,
+     "graph": {
+      "a": [
+       "b",
+       "c"
+      ],
+      "b": [
+       "a"
+      ],
+      "c": [
+       "a"
+      ]
+     },
+     "seconds": 0.0
+    },
+    "collider a->c<-b": {
+     "exact": true,
+     "missing_edges": 0,
+     "extra_edges": 0,
+     "adjacency_f1": 1.0,
+     "arrows": 2,
+     "wrong_arrows": 0,
+     "unsupported_arrows": 0,
+     "two_way_edges": 0,
+     "graph": {
+      "a": [],
+      "b": [],
+      "c": [
+       "a",
+       "b"
+      ]
+     },
+     "seconds": 0.0
+    },
+    "diamond": {
+     "exact": true,
+     "missing_edges": 0,
+     "extra_edges": 0,
+     "adjacency_f1": 1.0,
+     "arrows": 2,
+     "wrong_arrows": 0,
+     "unsupported_arrows": 0,
+     "two_way_edges": 2,
+     "graph": {
+      "a": [
+       "b",
+       "c"
+      ],
+      "b": [
+       "a"
+      ],
+      "c": [
+       "a"
+      ],
+      "d": [
+       "b",
+       "c"
+      ]
+     },
+     "seconds": 0.01
+    }
+   },
+   "random_5_node": {
+    "cases": 12,
+    "exact": 11,
+    "wrong_arrows": 0,
+    "unsupported_arrows": 0,
+    "arrows": 29,
+    "missing_edges": 1,
+    "extra_edges": 0,
+    "errors": 0
+   }
+  },
+  "lingam": {
+   "random_5_node_uniform": {
+    "cases": 12,
+    "exact": 12,
+    "wrong_arrows": 0,
+    "missing_edges": 0,
+    "extra_edges": 0,
+    "self_loops": 0,
+    "two_way_edges": 0,
+    "errors": 0
+   }
+  },
+  "notears": {
+   "random_5_node_uniform": {
+    "cases": 12,
+    "exact": 11,
+    "wrong_arrows": 1,
+    "missing_edges": 1,
+    "extra_edges": 0,
+    "self_loops": 0,
+    "two_way_edges": 0,
+    "errors": 0
+   }
+  }
+ },
+ "attribution": {
+  "truth_share": {
+   "email": 0.7448490767871262,
+   "search": 0.2551509232128738,
+   "display": 0.0,
+   "social": 0.0
+  },
+  "shapley": {
+   "share": {
+    "email": 0.75457232094435,
+    "search": 0.21884599739782004,
+    "display": 0.02658168165782994,
+    "social": 0.0
+   },
+   "error_points": 3.6
+  },
+  "logistic": {
+   "share": {
+    "email": 0.7231790871940833,
+    "search": 0.2440706147695645,
+    "display": 0.032750298036352175,
+    "social": 0.0
+   },
+   "error_points": 3.3
+  },
+  "linear": {
+   "share": {
+    "email": 0.7262296794077766,
+    "search": 0.2432427376653982,
+    "display": 0.03052758292682523,
+    "social": 0.0
+   },
+   "error_points": 3.1
+  },
+  "uplift": {
+   "share": {
+    "email": 0.6952442776646194,
+    "search": 0.27007295231807044,
+    "display": 0.03468277001731021,
+    "social": 0.0
+   },
+   "error_points": 5.0
+  }
+ }
+}

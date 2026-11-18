@@ -73,6 +73,15 @@ this ordering, and warns about any edge it then has to orient by assumption.
 
 FCI, which allows for latent confounders, is not implemented yet.
 
+#### Graded against known answers
+
+[`benchmarks/known_answers.py`](benchmarks/known_answers.py) simulates data from graphs
+and channel effects that are known in advance and grades every method against them. It
+uses only the public API, so any release can be run through it. On 12 random five-node
+graphs, 0.7.0 recovers the exact equivalence class 10 times with PC, 11 with GES and 11
+with hybrid, against 1, 2 and 0 for 0.6.0. Full results, including attribution, are in
+[`benchmarks/results/known_answers.md`](benchmarks/results/known_answers.md).
+
 ### 3. Structural Causal Models (SCM)
 
 ```python

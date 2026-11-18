@@ -70,7 +70,7 @@ __all__ = [
     "simulate_loop", "compare_loops",
 ]
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 
 def compare(scm, scenarios, target, draws=None, params=None, baseline=None):

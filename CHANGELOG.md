@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-11-18)
+
+### Added: a known-answer benchmark
+- `benchmarks/known_answers.py` grades causal discovery on graphs with a known
+  structure and attribution on channels with known effects, through the public API
+  only, so any release can be compared. Results for 0.6.0 and 0.7.0 are in
+  `benchmarks/results/`. On 12 random five-node graphs the exact equivalence class is
+  recovered 10, 11 and 11 times by PC, GES and hybrid (0.6.0: 1, 2 and 0), and
+  LiNGAM recovers all 12 graphs on non-Gaussian data (0.6.0: 3). Shapley attribution
+  misallocates 3.6 points of credit on the four-channel test (0.6.0: 25.3).
 
 ### Changed: marketing attribution rewritten and tested against known channel effects
 - `shapley` valued a set of channels by the raw conversion rate of users who saw
@@ -115,7 +124,7 @@
 - `CausalEffect.baseline_outcome`; `n_bootstrap` on `rank_drivers` and `validate`;
   `grid_points` on `optimize_policy`.
 
-## 0.6.0 (unreleased)
+## 0.6.0 (2026-11-12)
 
 ### Added
 - `futures.simulate_loop` and `futures.compare_loops`: run a measurement loop
