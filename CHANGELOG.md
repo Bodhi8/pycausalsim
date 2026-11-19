@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added: chat and agents
+- `pycausalsim.ai`: `ToolBox(simulator)` exposes the simulator as tools with JSON schemas
+  (`brief`, `data_summary`, `get_graph`, `simulate_intervention`, `naive_effect`,
+  `rank_drivers`, `validate`, `optimize_policy`, `set_graph`), each result carrying the
+  cautions that apply to it; `brief(simulator)`; `SYSTEM_PROMPT`.
+- `pycausalsim.chat`: `Chat`, a tool-use loop with a built-in offline agent (no key, no
+  network, deterministic), Claude and OpenAI-compatible backends (Ollama and other local
+  servers included), a grounding check that traces every number in a reply to a tool
+  result, approval before `set_graph`, a step cap, and agent tasks `overview`,
+  `effect_audit` and `act_first`. Shared line for line with `papilon.chat`.
+- `python -m pycausalsim.chat` (terminal chat) and `python -m pycausalsim.mcp_server`
+  (Model Context Protocol; `set_graph` only with `--allow-graph-changes`).
+- Optional extra `mcp`.
+
 ## 0.7.0 (2026-11-18)
 
 ### Added: a known-answer benchmark
