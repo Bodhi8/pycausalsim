@@ -97,7 +97,7 @@ def test_actions_that_change_the_model_wait_for_approval():
     box = FakeBox()
     chat = Chat(box, llm=Scripted(call("change", x=1), {"text": "done", "tool_calls": []}))
     r = chat.ask("change it")
-    assert r.pending == {"tool": "change", "input": {"x": 1}} and box.calls == []
+    assert r.pending == {"tool": "change", "input": {"x": 1}, "summary": None} and box.calls == []
     with pytest.raises(RuntimeError):
         chat.ask("something else")
     r = chat.approve()
@@ -236,6 +236,7 @@ def test_offline_agent_asks_before_changing_the_graph(box):
     chat = Chat(box)
     r = chat.ask("Assume device type causes page load time")
     assert r.pending["tool"] == "set_graph" and "device_type" not in box.sim.graph["page_load_time"]
+    assert r.pending["summary"] == "add device_type -> page_load_time"
     r = chat.approve()
     assert "device_type" in box.sim.graph["page_load_time"] and r.grounding["ok"]
     r = chat.ask("Device type does not cause page load time")

@@ -235,6 +235,16 @@ class ToolBox:
         return ([f"The direction of {', '.join(hits)} was assumed, not settled by the data; the estimate "
                  "depends on it."] if hits and self.graph_source == "discovered" else [])
 
+    def describe_call(self, name: str, arguments: dict) -> str | None:
+        """A plain-language summary of what a call that changes the model would do, for approval prompts."""
+        if name != "set_graph" or not isinstance((arguments or {}).get("graph"), dict):
+            return None
+        old = {tuple(e) for e in _edges(self.sim.graph)}
+        new = {(p, c) for c, ps in arguments["graph"].items() for p in (ps or [])}
+        fmt = lambda es: ", ".join(f"{a} -> {b}" for a, b in sorted(es))
+        parts = ([f"add {fmt(new - old)}"] if new - old else []) + ([f"remove {fmt(old - new)}"] if old - new else [])
+        return "; ".join(parts) or "no change to the edges"
+
     # tools ----------------------------------------------------------------
     def _t_brief(self, a):
         b = brief(self.sim, self.graph_source)
