@@ -148,6 +148,20 @@ def test_backend_specs(monkeypatch):
         make_llm("nope")
 
 
+def test_stepping_shows_each_tool_call_as_it_happens():
+    box = FakeBox()
+    chat = Chat(box, llm=Scripted(call("read"), call("change", 1), {"text": "4.25", "tool_calls": []}))
+    chat.start("go")
+    out = [chat.step(), chat.step(), chat.step(), chat.step()]
+    assert [o["type"] for o in out[:3]] == ["plan", "tool", "plan"]
+    assert out[1]["tool"] == "read" and out[1]["result"]["result"]["value"] == 4.25
+    assert isinstance(out[3], Reply) and out[3].pending["tool"] == "change"
+    assert chat.approve(run=False) is None and box.calls == ["read"]
+    assert chat.step()["tool"] == "change"
+    final = chat.step()
+    assert isinstance(final, Reply) and final.text == "4.25" and final.grounding["ok"]
+
+
 # ---------------------------------------------------------------- grounded tools
 
 def test_toolbox_returns_json_with_caveats(box):
