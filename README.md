@@ -247,6 +247,47 @@ analyst declared for the real brand.
 The [open leaderboard](https://github.com/Bodhi8/papilon/blob/main/benchmarks/LEADERBOARD.md)
 in the Papilon repository is built on these functions and accepts entries for any model.
 
+### 10. Chat with the model, and let an agent work through tasks
+
+Ask a causal model questions in plain English. The built-in offline agent needs no API
+key and no network. It picks the tools, chains several when a task needs it, and writes
+the answer from the results. Every reply comes with a grounding check that traces each
+number in the answer to a tool result.
+
+```python
+from pycausalsim.ai import ToolBox
+from pycausalsim.chat import Chat
+
+chat = Chat(ToolBox(simulator))                  # simulator has a discovered or set graph
+reply = chat.ask("What if we cut page load time by 1 second?")
+print(reply.text)        # causal effect with its 95% interval, next to the naive correlation
+reply.steps              # simulate_intervention, naive_effect: inputs and results
+reply.grounding["ok"]    # True: every number traced to a tool result
+
+chat.run_task("effect_audit")   # estimate, compare with correlation, stress-test against confounding
+chat.run_task("act_first")      # rank drivers, stress-test the top one, find the best settings
+```
+
+The offline agent answers a fixed range of questions: what causes the outcome, what if a
+variable is set, cut or raised, is an effect real, what drives the outcome, the best
+settings, and changes to the graph ("assume device type causes page load time"). Changing
+the graph waits for approval: the reply's `pending` field names the change, and
+`chat.approve()` or `chat.decline()` answers it.
+
+To let a language model drive the same tools, pass `llm="anthropic"` (Claude, with
+`ANTHROPIC_API_KEY`), `"openai:<model>"` or `"ollama:<model>"` for a local model. Requests
+use the standard library. `pycausalsim.ai.ToolBox` gives the tools as JSON schemas for any
+chat model API, and `python -m pycausalsim.mcp_server --data ... --target ...` serves them
+over the Model Context Protocol (`pip install "pycausalsim[mcp]"`). In a terminal:
+
+```bash
+python -m pycausalsim.chat --data visitors.csv --target conversion_rate \
+    --treatments page_load_time,price --confounders traffic_source,device_type
+```
+
+The chat module is shared with [Papilon](https://github.com/Bodhi8/papilon), so the same
+code drives conversations with a marketing mix model.
+
 ## Installation
 
 ```bash
@@ -361,6 +402,9 @@ pycausalsim/
 │   ├── attribution.py      # Marketing Attribution
 │   ├── experiment.py       # A/B Test Analysis
 │   ├── results.py          # Result classes
+│   ├── ai.py               # Grounded tools for language models (ToolBox)
+│   ├── chat.py             # Chat, offline agent, grounding check
+│   ├── mcp_server.py       # Model Context Protocol server
 │   ├── models/             # Structural Causal Models
 │   ├── discovery/          # Causal discovery algorithms
 │   ├── uplift/             # Uplift modeling

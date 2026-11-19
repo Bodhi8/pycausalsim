@@ -39,6 +39,9 @@ keywords = [
     "forecasting",
     "scenario analysis",
     "structural causal model",
+    "llm",
+    "ai agents",
+    "model context protocol",
 ]
 dependencies = [
     "numpy>=1.20.0",
@@ -63,6 +66,9 @@ viz = [
 ]
 neural = [
     "torch>=1.10.0",
+]
+mcp = [
+    "mcp>=1.2",
 ]
 integrations = [
     "dowhy>=0.8",
